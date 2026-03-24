@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { ToySQLite } from './index';
+import { ToySQLite } from '../src/index';
 
 describe('ToySQLite Integrated Engine', () => {
     let db: ToySQLite;
