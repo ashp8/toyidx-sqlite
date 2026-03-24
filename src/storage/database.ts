@@ -26,6 +26,9 @@ export class Database {
                 if (!db.objectStoreNames.contains('_metadata')) {
                     db.createObjectStore('_metadata');
                 }
+                if (!db.objectStoreNames.contains('_indexes')) {
+                    db.createObjectStore('_indexes');
+                }
             };
 
             request.onsuccess = (event: Event) => {

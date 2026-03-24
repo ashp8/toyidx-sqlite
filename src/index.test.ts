@@ -79,7 +79,38 @@ describe('ToySQLite Integrated Engine', () => {
         await expect(db.execute("INSERT INTO missing_table (id) VALUES (1)")).rejects.toThrow(/No such table/);
     });
 
-    it('should throw an error on unsupported queries like DELETE or UPDATE before implementation', async () => {
-        await expect(db.execute("UPDATE users SET name = 'John'")).rejects.toThrow(/Unexpected token/);
+    it('should handle UPDATE queries correctly', async () => {
+        await db.execute('CREATE TABLE workers (id INTEGER, name VARCHAR)');
+        await db.execute("INSERT INTO workers (id, name) VALUES (1, 'Alice'), (2, 'Bob')");
+        
+        await db.execute("UPDATE workers SET name = 'Bobby' WHERE id = 2");
+        
+        const res = await db.execute("SELECT * FROM workers");
+        expect(res.length).toBe(2);
+        expect(res[0].name).toBe('Alice');
+        expect(res[1].name).toBe('Bobby');
+    });
+
+    it('should handle DELETE queries correctly', async () => {
+        await db.execute('CREATE TABLE logs (status VARCHAR)');
+        await db.execute("INSERT INTO logs (status) VALUES ('INFO'), ('WARN'), ('ERROR'), ('INFO')");
+        
+        await db.execute("DELETE FROM logs WHERE status = 'INFO'");
+        
+        const res = await db.execute("SELECT * FROM logs");
+        expect(res.length).toBe(2);
+        expect(res[0].status).toBe('WARN');
+        expect(res[1].status).toBe('ERROR');
+    });
+
+    it('should create and leverage indexes for faster querying', async () => {
+        await db.execute('CREATE TABLE events (id INTEGER, user VARCHAR)');
+        await db.execute("INSERT INTO events (id, user) VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Alice')");
+        await db.commit();
+
+        await db.execute("CREATE INDEX user_idx ON events (user)");
+        
+        const res = await db.execute("SELECT * FROM events WHERE user = 'Alice'");
+        expect(res.length).toBe(2);
     });
 });

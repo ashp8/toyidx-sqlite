@@ -1,5 +1,5 @@
 import { Lexer } from "./lexer";
-import { CreateTableStatement, Statement, Token, TokenType, InsertStatement, SelectStatement } from "./types";
+import { CreateTableStatement, Statement, Token, TokenType, InsertStatement, SelectStatement, UpdateStatement, DeleteStatement, WhereClause, CreateIndexStatement, DropIndexStatement } from "./types";
 
 export class Parser {
     private currentToken: Token;
@@ -17,9 +17,24 @@ export class Parser {
 
     public parse(): Statement {
         const val = this.currentToken.value.toUpperCase();
-        if (val == 'CREATE') return this.parseCreateTable();
+        if (val == 'CREATE') {
+            this.eat(TokenType.Identifier);
+            const next = this.currentToken.value.toUpperCase();
+            if (next === 'TABLE') return this.parseCreateTable();
+            if (next === 'UNIQUE') return this.parseCreateIndex(true);
+            if (next === 'INDEX') return this.parseCreateIndex(false);
+            throw new Error(`Unexpected token after CREATE: ${next}`);
+        }
+        if (val == 'DROP') {
+            this.eat(TokenType.Identifier);
+            const next = this.currentToken.value.toUpperCase();
+            if (next === 'INDEX') return this.parseDropIndex();
+            throw new Error(`Unexpected token after DROP: ${next}`);
+        }
         if (val == 'INSERT') return this.parseInsert();
         if (val == 'SELECT') return this.parseSelect();
+        if (val == 'UPDATE') return this.parseUpdate();
+        if (val == 'DELETE') return this.parseDelete();
         throw new Error(`Unexpected token ${val}`);
     }
 
@@ -121,8 +136,17 @@ export class Parser {
         const tableName = this.currentToken.value;
         this.eat(TokenType.Identifier);
 
-        let where: any = undefined;
+        const where = this.parseWhere();
 
+        return {
+            type: 'SELECT',
+            table: tableName,
+            columns,
+            ...(where ? { where } : {})
+        };
+    }
+
+    private parseWhere(): WhereClause | undefined {
         if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'WHERE') {
             this.eat(TokenType.Identifier);
             
@@ -140,23 +164,90 @@ export class Parser {
             if ((this.currentToken.type as TokenType) === TokenType.Number) val = Number(val);
             this.eat(this.currentToken.type);
 
-            where = {
-                column: col,
-                operator: op,
-                value: val
-            };
+            return { column: col, operator: op, value: val };
+        }
+        return undefined;
+    }
+
+    private parseUpdate(): UpdateStatement {
+        this.eat(TokenType.Identifier); // UPDATE
+        const tableName = this.currentToken.value;
+        this.eat(TokenType.Identifier);
+
+        if (this.currentToken.value.toUpperCase() !== 'SET') {
+            throw new Error(`Expected SET but got ${this.currentToken.value}`);
+        }
+        this.eat(TokenType.Identifier);
+
+        const setParts: { column: string; value: any }[] = [];
+        while ((this.currentToken.type as TokenType) !== TokenType.EOF && this.currentToken.value.toUpperCase() !== 'WHERE') {
+            const col = this.currentToken.value;
+            this.eat(TokenType.Identifier);
+            this.eat(TokenType.Punctuation); // '='
+            
+            let val: any = this.currentToken.value;
+            if ((this.currentToken.type as TokenType) === TokenType.Number) val = Number(val);
+            else if ((this.currentToken.type as TokenType) === TokenType.String) val = val.toString();
+            this.eat(this.currentToken.type);
+
+            setParts.push({ column: col, value: val });
+
+            if ((this.currentToken.value as string) === ',') {
+                this.eat(TokenType.Punctuation);
+            }
         }
 
-        return {
-            type: 'SELECT',
-            table: tableName,
-            columns,
-            where
-        };
+        const where = this.parseWhere();
+
+        return { type: 'UPDATE', table: tableName, set: setParts, ...(where ? { where } : {}) };
+    }
+
+    private parseDelete(): DeleteStatement {
+        this.eat(TokenType.Identifier); // DELETE
+        
+        if (this.currentToken.value.toUpperCase() === 'FROM') {
+            this.eat(TokenType.Identifier);
+        }
+
+        const tableName = this.currentToken.value;
+        this.eat(TokenType.Identifier);
+
+        const where = this.parseWhere();
+
+        return { type: 'DELETE', table: tableName, ...(where ? { where } : {}) };
+    }
+
+    private parseDropIndex(): DropIndexStatement {
+        this.eat(TokenType.Identifier); // INDEX
+        const indexName = this.currentToken.value;
+        this.eat(TokenType.Identifier);
+        return { type: 'DROP_INDEX', name: indexName };
+    }
+
+    private parseCreateIndex(unique: boolean): CreateIndexStatement {
+        if (unique) this.eat(TokenType.Identifier); // UNIQUE
+        this.eat(TokenType.Identifier); // INDEX
+        
+        const indexName = this.currentToken.value;
+        this.eat(TokenType.Identifier);
+
+        if (this.currentToken.value.toUpperCase() !== 'ON') {
+            throw new Error(`Expected ON but got ${this.currentToken.value}`);
+        }
+        this.eat(TokenType.Identifier);
+
+        const tableName = this.currentToken.value;
+        this.eat(TokenType.Identifier);
+
+        this.eat(TokenType.Punctuation); // '('
+        const colName = this.currentToken.value;
+        this.eat(TokenType.Identifier);
+        this.eat(TokenType.Punctuation); // ')'
+
+        return { type: 'CREATE_INDEX', name: indexName, table: tableName, column: colName, unique };
     }
 
     private parseCreateTable(): CreateTableStatement {
-        this.eat(TokenType.Identifier);
         this.eat(TokenType.Identifier);
 
         let ifNotExists = false;

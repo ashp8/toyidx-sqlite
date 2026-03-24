@@ -15,7 +15,7 @@ export interface Token {
     column: number;
 };
 
-export type Statement = CreateTableStatement | InsertStatement | SelectStatement;
+export type Statement = CreateTableStatement | InsertStatement | SelectStatement | UpdateStatement | DeleteStatement | CreateIndexStatement | DropIndexStatement;
 
 export interface CreateTableStatement {
     type: 'CREATE_TABLE';
@@ -57,4 +57,30 @@ export interface SelectStatement {
     table: string;
     columns: string[];
     where?: WhereClause;
+}
+
+export interface UpdateStatement {
+    type: 'UPDATE';
+    table: string;
+    set: { column: string; value: any }[];
+    where?: WhereClause;
+}
+
+export interface DeleteStatement {
+    type: 'DELETE';
+    table: string;
+    where?: WhereClause;
+}
+
+export interface CreateIndexStatement {
+    type: 'CREATE_INDEX';
+    name: string;
+    table: string;
+    column: string;
+    unique?: boolean;
+}
+
+export interface DropIndexStatement {
+    type: 'DROP_INDEX';
+    name: string;
 }
