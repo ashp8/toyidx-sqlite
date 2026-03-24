@@ -1,0 +1,22 @@
+{
+  "name": "toyindx-sqlite",
+  "version": "0.1.0",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./index.d.ts",
+  "description": "",
+  "scripts": {
+    "dev": "tsup src/index.ts --watch --format esm,cjs --dts",
+    "build": "tsup src/index.ts --format esm,cjs --dts",
+    "test": "vitest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.15.0",
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.1"
+  }
+}
