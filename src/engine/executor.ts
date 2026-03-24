@@ -7,7 +7,7 @@ export class Executor {
     private wal: WAL;
     private table: TableManager;
 
-    constructor(private db: Database) {
+    constructor(db: Database) {
         this.wal = new WAL(db);
         this.table = new TableManager(db);
     }
@@ -48,7 +48,7 @@ export class Executor {
         for (const valTuple of stmt.values) {
             const record: any = {};
             for (let i = 0; i < stmt.columns.length; i++) {
-                record[stmt.columns[i]] = valTuple[i];
+                record[stmt.columns[i]!] = valTuple[i];
             }
             
             const rowId = await this.table.getNextRowId(stmt.table);
