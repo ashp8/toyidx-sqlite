@@ -30,7 +30,11 @@ export class ToySQLite {
         const parser = new Parser(lexer);
         const statement: Statement = parser.parse();
         
-        return await this.executor.execute(statement);
+        const res = await this.executor.execute(statement);
+        if (!this.executor.isInTransaction() && statement.type !== 'TRANSACTION') {
+            await this.executor.commitWAL();
+        }
+        return res;
     }
 
     /**

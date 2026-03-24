@@ -1,5 +1,5 @@
 import { Lexer } from "./lexer";
-import { CreateTableStatement, Statement, Token, TokenType, InsertStatement, SelectStatement, UpdateStatement, DeleteStatement, WhereClause, CreateIndexStatement, DropIndexStatement, ParserError, TransactionStatement, CreateViewStatement, DropTableStatement, AlterTableStatement, JoinClause, ColumnDefinition } from "./types";
+import { CreateTableStatement, Statement, Token, TokenType, InsertStatement, SelectStatement, UpdateStatement, DeleteStatement, WhereClause, CreateIndexStatement, DropIndexStatement, ParserError, TransactionStatement, CreateViewStatement, DropTableStatement, AlterTableStatement, JoinClause } from "./types";
 
 export class Parser {
     private currentToken: Token;
@@ -290,9 +290,14 @@ export class Parser {
                 let colExpr = '';
                 while ((this.currentToken.type as TokenType) !== TokenType.EOF && (this.currentToken.value as string) !== ',' && this.currentToken.value.toUpperCase() !== 'FROM') {
                     const valStr = this.currentToken.value as string;
-                    if (colExpr.length > 0 && /[a-zA-Z0-9_]/.test(colExpr[colExpr.length - 1]) && /[a-zA-Z0-9_]/.test(valStr[0])) {
-                        colExpr += ' ';
+                    let addSpace = false;
+                    if (colExpr.length > 0) {
+                        const lastChar = colExpr.charAt(colExpr.length - 1);
+                        const firstChar = valStr.charAt(0);
+                        if (/[a-zA-Z0-9_]/.test(lastChar) && /[a-zA-Z0-9_]/.test(firstChar)) addSpace = true;
+                        if (valStr.toUpperCase() === 'AS') addSpace = true;
                     }
+                    if (addSpace) colExpr += ' ';
                     colExpr += valStr;
                     this.eat(this.currentToken.type);
                 }

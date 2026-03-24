@@ -6,10 +6,15 @@ import { WAL, WALEntry } from "../storage/wal";
 export class Executor {
     private wal: WAL;
     private table: TableManager;
+    private inTransaction: boolean = false;
 
     constructor(db: Database) {
         this.wal = new WAL(db);
         this.table = new TableManager(db);
+    }
+
+    public isInTransaction(): boolean {
+        return this.inTransaction;
     }
 
     public async execute(stmt: Statement): Promise<any> {
@@ -180,7 +185,7 @@ export class Executor {
 
         let val = record[where.column];
         if (val === undefined && where.column.includes('.')) {
-            val = record[where.column.split('.')[1]];
+            val = record[where.column.split('.')[1] as string];
         }
 
         let rhs = where.value;
@@ -263,25 +268,25 @@ export class Executor {
         let expr = colExpr;
         let alias = colExpr;
         const asMatch = colExpr.match(/(.*)\s+AS\s+(.*)/i);
-        if (asMatch) {
+        if (asMatch && asMatch[1] && asMatch[2]) {
             expr = asMatch[1].trim();
             alias = asMatch[2].trim();
         }
 
         const aggMatch = expr.match(/(COUNT|SUM|MAX|MIN|AVG)\s*\(\s*(.*)\s*\)/i);
-        if (aggMatch) {
+        if (aggMatch && aggMatch[1] && aggMatch[2]) {
             const func = aggMatch[1].toUpperCase();
             const innerCol = aggMatch[2].trim();
             let value = 0;
             if (func === 'COUNT') value = group.length;
-            else if (func === 'SUM') value = group.reduce((sum, r) => sum + (Number(r[innerCol] || r[innerCol.split('.')[1]]) || 0), 0);
-            else if (func === 'MAX') value = Math.max(...group.map(r => Number(r[innerCol] || r[innerCol.split('.')[1]]) || -Infinity));
-            else if (func === 'MIN') value = Math.min(...group.map(r => Number(r[innerCol] || r[innerCol.split('.')[1]]) || Infinity));
-            else if (func === 'AVG') value = group.reduce((sum, r) => sum + (Number(r[innerCol] || r[innerCol.split('.')[1]]) || 0), 0) / (group.length || 1);
+            else if (func === 'SUM') value = group.reduce((sum, r) => sum + (Number(r[innerCol] || r[innerCol.split('.')[1] as string]) || 0), 0);
+            else if (func === 'MAX') value = Math.max(...group.map(r => Number(r[innerCol] || r[innerCol.split('.')[1] as string]) || -Infinity));
+            else if (func === 'MIN') value = Math.min(...group.map(r => Number(r[innerCol] || r[innerCol.split('.')[1] as string]) || Infinity));
+            else if (func === 'AVG') value = group.reduce((sum, r) => sum + (Number(r[innerCol] || r[innerCol.split('.')[1] as string]) || 0), 0) / (group.length || 1);
             return { alias, value };
         }
 
-        let value = group[0] ? (group[0][expr] !== undefined ? group[0][expr] : group[0][expr.split('.')[1]]) : null;
+        let value = group[0] ? (group[0][expr] !== undefined ? group[0][expr] : group[0][expr.split('.')[1] as string]) : null;
         return { alias, value };
     }
 
@@ -326,7 +331,7 @@ export class Executor {
         let grouped: { keys: any[], records: any[] }[] = [];
         if (stmt.groupBy) {
             for (const r of records) {
-                const keys = stmt.groupBy.map(g => r[g] || r[g.split('.')[1]]);
+                const keys = stmt.groupBy.map(g => r[g] || r[g.split('.')[1] as string]);
                 let group = grouped.find(g => JSON.stringify(g.keys) === JSON.stringify(keys));
                 if (!group) {
                     group = { keys, records: [] };
@@ -489,7 +494,11 @@ export class Executor {
             if (entries.length > len) {
                 await this.wal.clear();
                 for (let i = 0; i < len; i++) {
-                    await this.wal.append(entries[i] as any);
+                    const e = entries[i];
+                    if (e) {
+                        delete e.id;
+                        await this.wal.append(e as any);
+                    }
                 }
             }
         }
