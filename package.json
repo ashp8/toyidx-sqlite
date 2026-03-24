@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "tsup src/index.ts --watch --format esm,cjs --dts",
     "build": "tsup src/index.ts --format esm,cjs --dts",
-    "test": "vitest"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
