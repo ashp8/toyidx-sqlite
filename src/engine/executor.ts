@@ -95,61 +95,86 @@ export class Executor {
     }
 
     private async executeSelect(stmt: SelectStatement): Promise<any[]> {
-        let records: any[] = [];
-        let usedIndex = false;
         const schema = await this.table.getSchema(stmt.table);
         const indexes = schema?.indexes || [];
-
-        if (stmt.where && stmt.where.operator === '=') {
-            const idx = indexes.find((i: any) => i.column === stmt.where!.column);
-            if (idx) {
-                records = await this.table.getRowsByIndex(stmt.table, idx.name, stmt.where.value);
-                usedIndex = true;
-            }
-        }
-        
-        if (!usedIndex) {
-            records = await this.table.getAllRecords(stmt.table);
-        }
-        
         const uncommitted = await this.wal.readAll();
         const tableWal = uncommitted.filter((w: WALEntry) => w.table === stmt.table);
 
-        let currentRecords = [...records];
+        let currentRecords: any[] = [];
+        let limit = stmt.limit;
+        let offset = stmt.offset || 0;
+        let count = 0;
+
+        const processRow = async (r: any): Promise<boolean> => {
+            let row = { ...r };
+            let isDeleted = false;
+            for (const entry of tableWal) {
+                 if (entry.type === 'DELETE') {
+                     const q = entry.payload as DeleteStatement;
+                     if (this.applyWhere(row, q.where)) isDeleted = true;
+                 } else if (entry.type === 'UPDATE') {
+                     const q = entry.payload as UpdateStatement;
+                     if (this.applyWhere(row, q.where)) {
+                         for (const set of q.set) {
+                             row[set.column] = set.value;
+                         }
+                         isDeleted = false;
+                     }
+                 }
+            }
+
+            if (isDeleted) return true;
+            if (!this.applyWhere(row, stmt.where)) return true;
+
+            if (offset > 0) {
+                 offset--;
+                 return true;
+            }
+
+            if (stmt.columns.length === 1 && stmt.columns[0] === '*') {
+                 currentRecords.push(row);
+            } else {
+                 const projected: any = {};
+                 for (const c of stmt.columns) projected[c] = row[c];
+                 currentRecords.push(projected);
+            }
+            
+            count++;
+            if (limit !== undefined && count >= limit) {
+                return false; // halt cursor loop natively!
+            }
+            return true;
+        };
+
+        // Stream WAL inserts first
         for (const entry of tableWal) {
             if (entry.type === 'INSERT') {
-                currentRecords.push(entry.payload);
-            } else if (entry.type === 'DELETE') {
-                const query = entry.payload as DeleteStatement;
-                currentRecords = currentRecords.filter(r => !this.applyWhere(r, query.where));
-            } else if (entry.type === 'UPDATE') {
-                const query = entry.payload as UpdateStatement;
-                currentRecords = currentRecords.map(r => {
-                    if (this.applyWhere(r, query.where)) {
-                        const updated = { ...r };
-                        for (const set of query.set) {
-                            updated[set.column] = set.value;
-                        }
-                        return updated;
-                    }
-                    return r;
-                });
+                const shouldContinue = await processRow(entry.payload);
+                if (!shouldContinue) return currentRecords;
             }
         }
 
-        let filtered = currentRecords.filter((r: any) => this.applyWhere(r, stmt.where));
-
-        if (stmt.columns.length === 1 && stmt.columns[0] === '*') {
-             return filtered;
+        // Stream table physically
+        if (limit === undefined || count < limit) {
+            let idxToUse: any;
+            if (stmt.where && stmt.where.operator === '=') {
+                idxToUse = indexes.find((i: any) => i.column === stmt.where!.column);
+            }
+            
+            if (idxToUse) {
+                // Index routing overrides table streaming
+                const idxRows = await this.table.getRowsByIndex(stmt.table, idxToUse.name, stmt.where!.value);
+                for (const r of idxRows) {
+                     const shouldContinue = await processRow(r);
+                     if (!shouldContinue) break;
+                }
+            } else {
+                // Native IDB bounds full streaming scan 
+                await this.table.scanTable(stmt.table, processRow);
+            }
         }
 
-        return filtered.map((r: any) => {
-             const projected: any = {};
-             for (const col of stmt.columns) {
-                 projected[col] = r[col];
-             }
-             return projected;
-        });
+        return currentRecords;
     }
 
     public async commitWAL(): Promise<void> {

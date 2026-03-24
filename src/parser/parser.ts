@@ -138,11 +138,28 @@ export class Parser {
 
         const where = this.parseWhere();
 
+        let limit: number | undefined;
+        let offset: number | undefined;
+
+        if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'LIMIT') {
+            this.eat(TokenType.Identifier);
+            limit = Number(this.currentToken.value);
+            this.eat(TokenType.Number);
+            
+            if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'OFFSET') {
+                this.eat(TokenType.Identifier);
+                offset = Number(this.currentToken.value);
+                this.eat(TokenType.Number);
+            }
+        }
+
         return {
             type: 'SELECT',
             table: tableName,
             columns,
-            ...(where ? { where } : {})
+            ...(where ? { where } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+            ...(offset !== undefined ? { offset } : {})
         };
     }
 

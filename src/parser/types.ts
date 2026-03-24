@@ -57,6 +57,8 @@ export interface SelectStatement {
     table: string;
     columns: string[];
     where?: WhereClause;
+    limit?: number;
+    offset?: number;
 }
 
 export interface UpdateStatement {

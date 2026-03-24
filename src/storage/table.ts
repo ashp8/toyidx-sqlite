@@ -39,6 +39,43 @@ export class TableManager {
         });
     }
 
+    public async scanTable(
+        tableName: string,
+        callback: (record: any) => boolean | Promise<boolean>
+    ): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const tx = this.db.getDB().transaction('_data', 'readonly');
+            const store = tx.objectStore('_data');
+            const range = IDBKeyRange.bound([tableName, -Infinity], [tableName, Infinity]);
+            const request = store.openCursor(range);
+            
+            request.onsuccess = async (event: any) => {
+                const cursor = event.target.result;
+                if (cursor) {
+                    const shouldContinue = await callback(cursor.value);
+                    if (shouldContinue) {
+                        cursor.continue();
+                    } else {
+                        resolve();
+                    }
+                } else {
+                    resolve();
+                }
+            };
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    public async getRecordById(tableName: string, rowId: number | string): Promise<any> {
+        return new Promise((resolve, reject) => {
+            const tx = this.db.getDB().transaction('_data', 'readonly');
+            const store = tx.objectStore('_data');
+            const request = store.get([tableName, rowId]);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
     public async getAllRecords(tableName: string): Promise<any[]> {
         return new Promise((resolve, reject) => {
             const tx = this.db.getDB().transaction('_data', 'readonly');

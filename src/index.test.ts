@@ -113,4 +113,21 @@ describe('ToySQLite Integrated Engine', () => {
         const res = await db.execute("SELECT * FROM events WHERE user = 'Alice'");
         expect(res.length).toBe(2);
     });
+
+    it('should halt array iteration natively using limits and offsets', async () => {
+        await db.execute('CREATE TABLE numbers (val INTEGER)');
+        for(let i=0; i<10; i++) {
+            await db.execute(`INSERT INTO numbers (val) VALUES (${i})`);
+        }
+        await db.commit();
+
+        const res = await db.execute("SELECT * FROM numbers LIMIT 5");
+        expect(res.length).toBe(5);
+        expect(res[4].val).toBe(4);
+
+        const res2 = await db.execute("SELECT * FROM numbers LIMIT 2 OFFSET 3");
+        expect(res2.length).toBe(2);
+        expect(res2[0].val).toBe(3); 
+        expect(res2[1].val).toBe(4);
+    });
 });
