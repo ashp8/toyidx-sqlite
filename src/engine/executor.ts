@@ -51,6 +51,15 @@ export class Executor {
         if (!schema) {
             throw new Error(`No such table: ${stmt.table}`);
         }
+        
+        const uniqueColumns: string[] = [...(schema.primaryKey || [])];
+        if (schema.columns) {
+             schema.columns.forEach((c: any) => {
+                  if (c.isUnique && !uniqueColumns.includes(c.name)) uniqueColumns.push(c.name);
+             });
+        }
+        
+        const pkColumn = schema.primaryKey && schema.primaryKey.length === 1 ? schema.primaryKey[0] : null;
 
         for (const valTuple of stmt.values) {
             const record: any = {};
@@ -58,7 +67,32 @@ export class Executor {
                 record[stmt.columns[i]!] = valTuple[i];
             }
             
-            const rowId = await this.table.getNextRowId(stmt.table);
+            for (const col of uniqueColumns) {
+                if (record[col] !== undefined) {
+                    const check = await this.executeSelect({
+                        type: 'SELECT',
+                        table: stmt.table,
+                        columns: [col],
+                        where: { column: col, operator: '=', value: record[col] },
+                        limit: 1
+                    });
+                    if (check.length > 0) {
+                        throw new Error(`UNIQUE constraint failed: ${stmt.table}.${col}`);
+                    }
+                }
+            }
+            
+            let rowId: number;
+            if (pkColumn && record[pkColumn] !== undefined) {
+                rowId = record[pkColumn];
+                await this.table.updateSeqIfHigher(stmt.table, rowId);
+            } else {
+                rowId = await this.table.getNextRowId(stmt.table);
+                if (pkColumn) {
+                    record[pkColumn] = rowId;
+                }
+            }
+            
             record._rowid = rowId;
 
             // Log into WAL instead of directly inserting

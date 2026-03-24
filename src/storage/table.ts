@@ -19,6 +19,23 @@ export class TableManager {
         });
     }
 
+    public async updateSeqIfHigher(tableName: string, value: number): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const tx = this.db.getDB().transaction('_metadata', 'readwrite');
+            const store = tx.objectStore('_metadata');
+            const request = store.get(`seq_${tableName}`);
+            
+            request.onsuccess = () => {
+                const current = request.result || 0;
+                if (value > current) {
+                    store.put(value, `seq_${tableName}`);
+                }
+                resolve();
+            };
+            request.onerror = () => reject(request.error);
+        });
+    }
+
     public async insertRecord(tableName: string, rowId: number | string, record: any): Promise<void> {
         return new Promise((resolve, reject) => {
             const tx = this.db.getDB().transaction('_data', 'readwrite');
