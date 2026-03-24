@@ -101,6 +101,21 @@ export class Executor {
 
         const targetCols = stmt.columns.length > 0 ? stmt.columns : (schema.columns?.map((c: any) => c.name) || []);
 
+        const uniqueValues: Record<string, Set<any>> = {};
+        if (uniqueColumns.length > 0) {
+            for (const col of uniqueColumns) {
+                uniqueValues[col] = new Set();
+            }
+            const currentData = await this.getFullTableData(stmt.table);
+            for (const row of currentData) {
+                for (const col of uniqueColumns) {
+                    if (row[col] !== undefined && row[col] !== null) {
+                        uniqueValues[col]?.add(row[col]);
+                    }
+                }
+            }
+        }
+
         for (const valTuple of insertValues) {
             const record: any = {};
             for (let i = 0; i < targetCols.length; i++) {
@@ -109,23 +124,32 @@ export class Executor {
             
             let skipRow = false;
             for (const col of uniqueColumns) {
-                if (record[col] !== undefined) {
-                    const check = await this.executeSelect({
-                        type: 'SELECT',
-                        table: stmt.table,
-                        columns: [col],
-                        where: { column: col, operator: '=', value: record[col] },
-                        limit: 1
-                    });
-                    if (check.length > 0) {
+                const val = record[col];
+                if (val !== undefined && val !== null) {
+                    if (uniqueValues[col]?.has(val)) {
                         if (stmt.orIgnore) {
                             skipRow = true;
                             break;
                         } else if (stmt.orReplace) {
+                            const oldRows = await this.executeSelect({
+                                type: 'SELECT',
+                                table: stmt.table,
+                                columns: ['*'],
+                                where: { column: col, operator: '=', value: val },
+                                limit: 1
+                            });
+                            if (oldRows.length > 0) {
+                                const oldRow = oldRows[0];
+                                for (const uc of uniqueColumns) {
+                                    if (oldRow[uc] !== undefined && oldRow[uc] !== null) {
+                                        uniqueValues[uc]?.delete(oldRow[uc]);
+                                    }
+                                }
+                            }
                             await this.wal.append({
                                 type: 'DELETE',
                                 table: stmt.table,
-                                payload: { type: 'DELETE', table: stmt.table, where: { column: col, operator: '=', value: record[col] } }
+                                payload: { type: 'DELETE', table: stmt.table, where: { column: col, operator: '=', value: val } }
                             });
                         } else {
                             throw new Error(`UNIQUE constraint failed: ${stmt.table}.${col}`);
@@ -147,6 +171,14 @@ export class Executor {
             }
             
             record._rowid = rowId;
+
+            // Cache new unique values immediately to evaluate next iteration rows accurately
+            for (const col of uniqueColumns) {
+                const val = record[col];
+                if (val !== undefined && val !== null) {
+                    uniqueValues[col]?.add(val);
+                }
+            }
 
             await this.wal.append({
                 type: 'INSERT',
