@@ -29,7 +29,10 @@ export class ParserError extends Error {
 }
 
 
-export type Statement = CreateTableStatement | InsertStatement | SelectStatement | UpdateStatement | DeleteStatement | CreateIndexStatement | DropIndexStatement;
+export type Statement = 
+    CreateTableStatement | InsertStatement | SelectStatement | UpdateStatement | DeleteStatement | 
+    CreateIndexStatement | DropIndexStatement | TransactionStatement | CreateViewStatement | 
+    DropTableStatement | AlterTableStatement;
 
 export interface CreateTableStatement {
     type: 'CREATE_TABLE';
@@ -57,13 +60,19 @@ export interface InsertStatement {
     type: 'INSERT';
     table: string;
     columns: string[];
-    values: any[][];
+    values?: any[][];
+    select?: SelectStatement;
+    orIgnore?: boolean;
+    orReplace?: boolean;
+    returning?: string[];
 }
 
 export interface WhereClause {
     column: string;
     operator: string;
     value: any;
+    and?: WhereClause;
+    or?: WhereClause;
 }
 
 export interface SelectStatement {
@@ -73,6 +82,16 @@ export interface SelectStatement {
     where?: WhereClause;
     limit?: number;
     offset?: number;
+    groupBy?: string[];
+    having?: WhereClause;
+    joins?: JoinClause[];
+    union?: SelectStatement[];
+}
+
+export interface JoinClause {
+    type: 'INNER' | 'LEFT' | 'CROSS' | 'JOIN';
+    table: string;
+    on?: WhereClause;
 }
 
 export interface UpdateStatement {
@@ -99,4 +118,31 @@ export interface CreateIndexStatement {
 export interface DropIndexStatement {
     type: 'DROP_INDEX';
     name: string;
+}
+
+export interface TransactionStatement {
+    type: 'TRANSACTION';
+    action: 'BEGIN' | 'COMMIT' | 'ROLLBACK' | 'SAVEPOINT' | 'ROLLBACK_TO';
+    name?: string;
+}
+
+export interface CreateViewStatement {
+    type: 'CREATE_VIEW';
+    name: string;
+    select: SelectStatement;
+}
+
+export interface DropTableStatement {
+    type: 'DROP_TABLE';
+    name: string;
+    ifExists?: boolean;
+}
+
+export interface AlterTableStatement {
+    type: 'ALTER_TABLE';
+    table: string;
+    action: 'ADD_COLUMN' | 'RENAME_TABLE' | 'RENAME_COLUMN';
+    columnDef?: ColumnDefinition; // for ADD_COLUMN
+    newName?: string; // for RENAME_TABLE / RENAME_COLUMN
+    oldName?: string; // for RENAME_COLUMN
 }

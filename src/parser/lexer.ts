@@ -70,6 +70,26 @@ export class Lexer {
             }
         }
 
+        // Check for operators
+        const opChars = ['=', '>', '<', '!', '|', '*', '+', '-', '/', '%'];
+        if (opChars.includes(this.char)) {
+            let val = this.char;
+            this.advance();
+            if ((val === '=' || val === '>' || val === '<' || val === '!') && this.char === '=') {
+                val += this.char;
+                this.advance();
+            } else if (val === '|' && this.char === '|') {
+                val += this.char;
+                this.advance();
+            } else if (val === '<' && this.char === '>') {
+                val += this.char;
+                this.advance();
+            }
+            return {
+                type: TokenType.Operator, value: val, line: startLine, column: startCol
+            };
+        }
+
         const val = this.char;
         this.advance();
         return {

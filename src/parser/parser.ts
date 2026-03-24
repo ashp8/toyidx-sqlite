@@ -1,5 +1,5 @@
 import { Lexer } from "./lexer";
-import { CreateTableStatement, Statement, Token, TokenType, InsertStatement, SelectStatement, UpdateStatement, DeleteStatement, WhereClause, CreateIndexStatement, DropIndexStatement, ParserError } from "./types";
+import { CreateTableStatement, Statement, Token, TokenType, InsertStatement, SelectStatement, UpdateStatement, DeleteStatement, WhereClause, CreateIndexStatement, DropIndexStatement, ParserError, TransactionStatement, CreateViewStatement, DropTableStatement, AlterTableStatement, JoinClause, ColumnDefinition } from "./types";
 
 export class Parser {
     private currentToken: Token;
@@ -17,20 +17,26 @@ export class Parser {
 
     public parse(): Statement {
         const val = this.currentToken.value.toUpperCase();
+        if (val === 'BEGIN' || val === 'COMMIT' || val === 'ROLLBACK' || val === 'SAVEPOINT') {
+            return this.parseTransaction();
+        }
         if (val == 'CREATE') {
             this.eat(TokenType.Identifier);
             const next = this.currentToken.value.toUpperCase();
             if (next === 'TABLE') return this.parseCreateTable();
             if (next === 'UNIQUE') return this.parseCreateIndex(true);
             if (next === 'INDEX') return this.parseCreateIndex(false);
+            if (next === 'VIEW') return this.parseCreateView();
             throw new ParserError(`Unexpected token after CREATE: '${next}'`, this.currentToken.line, this.currentToken.column);
         }
         if (val == 'DROP') {
             this.eat(TokenType.Identifier);
             const next = this.currentToken.value.toUpperCase();
             if (next === 'INDEX') return this.parseDropIndex();
+            if (next === 'TABLE') return this.parseDropTable();
             throw new ParserError(`Unexpected token after DROP: '${next}'`, this.currentToken.line, this.currentToken.column);
         }
+        if (val === 'ALTER') return this.parseAlterTable();
         if (val == 'INSERT') return this.parseInsert();
         if (val == 'SELECT') return this.parseSelect();
         if (val == 'UPDATE') return this.parseUpdate();
@@ -38,9 +44,144 @@ export class Parser {
         throw new ParserError(`Unexpected query keyword: '${val}'`, this.currentToken.line, this.currentToken.column);
     }
 
+    private parseTransaction(): TransactionStatement {
+        const actionStr = this.currentToken.value.toUpperCase();
+        this.eat(TokenType.Identifier);
+        
+        if (actionStr === 'BEGIN') {
+            if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'TRANSACTION') {
+                this.eat(TokenType.Identifier);
+            }
+            return { type: 'TRANSACTION', action: 'BEGIN' };
+        } else if (actionStr === 'COMMIT') {
+            if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'TRANSACTION') {
+                this.eat(TokenType.Identifier);
+            }
+            return { type: 'TRANSACTION', action: 'COMMIT' };
+        } else if (actionStr === 'ROLLBACK') {
+            if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'TRANSACTION') {
+                this.eat(TokenType.Identifier);
+            }
+            if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'TO') {
+                this.eat(TokenType.Identifier);
+                if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'SAVEPOINT') {
+                    this.eat(TokenType.Identifier);
+                }
+                const name = this.currentToken.value;
+                this.eat(TokenType.Identifier);
+                return { type: 'TRANSACTION', action: 'ROLLBACK_TO', name };
+            }
+            return { type: 'TRANSACTION', action: 'ROLLBACK' };
+        } else if (actionStr === 'SAVEPOINT') {
+            const name = this.currentToken.value;
+            this.eat(TokenType.Identifier);
+            return { type: 'TRANSACTION', action: 'SAVEPOINT', name };
+        }
+        throw new ParserError(`Invalid transaction action: ${actionStr}`, this.currentToken.line, this.currentToken.column);
+    }
+
+    private parseCreateView(): CreateViewStatement {
+        this.eat(TokenType.Identifier); // VIEW
+        const viewName = this.currentToken.value;
+        this.eat(TokenType.Identifier);
+
+        if (this.currentToken.value.toUpperCase() !== 'AS') {
+            throw new ParserError(`Expected AS but got '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column);
+        }
+        this.eat(TokenType.Identifier);
+
+        const selectStmt = this.parseSelect();
+        return { type: 'CREATE_VIEW', name: viewName, select: selectStmt };
+    }
+
+    private parseDropTable(): DropTableStatement {
+        this.eat(TokenType.Identifier); // TABLE
+        let ifExists = false;
+        if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'IF') {
+            this.eat(TokenType.Identifier);
+            if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'EXISTS') {
+                this.eat(TokenType.Identifier);
+                ifExists = true;
+            }
+        }
+        const tableName = this.currentToken.value;
+        this.eat(TokenType.Identifier);
+        return { type: 'DROP_TABLE', name: tableName, ifExists };
+    }
+
+    private parseAlterTable(): AlterTableStatement {
+        this.eat(TokenType.Identifier); // ALTER
+        if (this.currentToken.value.toUpperCase() !== 'TABLE') {
+            throw new ParserError(`Expected TABLE but got '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column);
+        }
+        this.eat(TokenType.Identifier);
+        
+        const tableName = this.currentToken.value;
+        this.eat(TokenType.Identifier);
+
+        const actionKw = this.currentToken.value.toUpperCase();
+        this.eat(TokenType.Identifier);
+
+        if (actionKw === 'ADD') {
+            if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'COLUMN') {
+                this.eat(TokenType.Identifier);
+            }
+            const colName = this.currentToken.value;
+            this.eat(TokenType.Identifier);
+            
+            let dataType = '';
+            if (this.currentToken.type === TokenType.Identifier) {
+                dataType = this.currentToken.value;
+                this.eat(TokenType.Identifier);
+            }
+            return {
+                type: 'ALTER_TABLE',
+                table: tableName,
+                action: 'ADD_COLUMN',
+                columnDef: { name: colName, dataType: dataType, isNullable: true }
+            };
+        } else if (actionKw === 'RENAME') {
+            if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'TO') {
+                this.eat(TokenType.Identifier);
+                const newName = this.currentToken.value;
+                this.eat(TokenType.Identifier);
+                return { type: 'ALTER_TABLE', table: tableName, action: 'RENAME_TABLE', newName };
+            } else if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'COLUMN') {
+                this.eat(TokenType.Identifier);
+                const oldName = this.currentToken.value;
+                this.eat(TokenType.Identifier);
+                if (this.currentToken.value.toUpperCase() !== 'TO') {
+                    throw new ParserError(`Expected TO but got '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column);
+                }
+                this.eat(TokenType.Identifier);
+                const newName = this.currentToken.value;
+                this.eat(TokenType.Identifier);
+                return { type: 'ALTER_TABLE', table: tableName, action: 'RENAME_COLUMN', oldName, newName };
+            }
+        }
+        throw new ParserError(`Unsupported ALTER TABLE action: ${actionKw}`, this.currentToken.line, this.currentToken.column);
+    }
+
     private parseInsert(): InsertStatement {
         this.eat(TokenType.Identifier); // INSERT
         
+        let orIgnore = false;
+        let orReplace = false;
+
+        if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'OR') {
+            this.eat(TokenType.Identifier);
+            const act = this.currentToken.value.toUpperCase();
+            if (act === 'IGNORE') {
+                orIgnore = true;
+                this.eat(TokenType.Identifier);
+            } else if (act === 'REPLACE') {
+                orReplace = true;
+                this.eat(TokenType.Identifier);
+            } else {
+                throw new ParserError(`Expected IGNORE or REPLACE after OR, got ${act}`, this.currentToken.line, this.currentToken.column);
+            }
+        }
+
         if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'INTO') {
             this.eat(TokenType.Identifier);
         }
@@ -63,42 +204,65 @@ export class Parser {
             }
         }
 
+        let values: any[][] | undefined;
+        let selectStmt: SelectStatement | undefined;
+
         if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'VALUES') {
             this.eat(TokenType.Identifier);
-        } else {
-            throw new ParserError(`Expected VALUES but got '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column);
-        }
+            values = [];
+            while ((this.currentToken.value as string) === '(') {
+                this.eat(TokenType.Punctuation);
+                const tuple: any[] = [];
+                while ((this.currentToken.type as TokenType) !== TokenType.EOF && (this.currentToken.value as string) !== ')') {
+                    if ((this.currentToken.type as TokenType) === TokenType.Number) {
+                        tuple.push(Number(this.currentToken.value));
+                    } else if ((this.currentToken.type as TokenType) === TokenType.String) {
+                        tuple.push(this.currentToken.value);
+                    } else if ((this.currentToken.type as TokenType) === TokenType.Identifier) {
+                        tuple.push(this.currentToken.value);
+                    } else {
+                        tuple.push(this.currentToken.value);
+                    }
+                    this.eat(this.currentToken.type);
 
-        const values: any[][] = [];
-        
-        while ((this.currentToken.value as string) === '(') {
-            this.eat(TokenType.Punctuation);
-            const tuple: any[] = [];
-            while ((this.currentToken.type as TokenType) !== TokenType.EOF && (this.currentToken.value as string) !== ')') {
-                if ((this.currentToken.type as TokenType) === TokenType.Number) {
-                    tuple.push(Number(this.currentToken.value));
-                } else if ((this.currentToken.type as TokenType) === TokenType.String) {
-                    tuple.push(this.currentToken.value);
-                } else if ((this.currentToken.type as TokenType) === TokenType.Identifier) {
-                    tuple.push(this.currentToken.value);
-                } else {
-                    tuple.push(this.currentToken.value);
+                    if ((this.currentToken.value as string) === ',') {
+                        this.eat(TokenType.Punctuation);
+                    }
                 }
-                this.eat(this.currentToken.type);
+                if ((this.currentToken.value as string) === ')') {
+                    this.eat(TokenType.Punctuation);
+                }
+                values.push(tuple);
 
                 if ((this.currentToken.value as string) === ',') {
                     this.eat(TokenType.Punctuation);
+                } else {
+                    break;
                 }
             }
-            if ((this.currentToken.value as string) === ')') {
-                this.eat(TokenType.Punctuation);
-            }
-            values.push(tuple);
+        } else if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'SELECT') {
+            selectStmt = this.parseSelect();
+        } else {
+            throw new ParserError(`Expected VALUES or SELECT but got '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column);
+        }
 
-            if ((this.currentToken.value as string) === ',') {
-                this.eat(TokenType.Punctuation);
-            } else {
-                break;
+        let returning: string[] | undefined;
+        if ((this.currentToken.type as TokenType) !== TokenType.EOF && this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'RETURNING') {
+            this.eat(TokenType.Identifier);
+            returning = [];
+            while ((this.currentToken.type as TokenType) !== TokenType.EOF) {
+                returning.push(this.currentToken.value);
+                const ctype = this.currentToken.type as TokenType;
+                if (ctype === TokenType.Punctuation || ctype === TokenType.Operator) {
+                    this.eat(ctype);
+                } else {
+                    this.eat(TokenType.Identifier);
+                }
+                if (this.currentToken.value === ',') {
+                    this.eat(TokenType.Punctuation);
+                } else {
+                    break;
+                }
             }
         }
 
@@ -106,7 +270,11 @@ export class Parser {
             type: 'INSERT',
             table: tableName,
             columns,
-            values
+            ...(values ? { values } : {}),
+            ...(selectStmt ? { select: selectStmt } : {}),
+            ...(orIgnore ? { orIgnore: true } : {}),
+            ...(orReplace ? { orReplace: true } : {}),
+            ...(returning ? { returning } : {})
         };
     }
 
@@ -116,11 +284,19 @@ export class Parser {
         const columns: string[] = [];
         if (this.currentToken.value === '*') {
             columns.push('*');
-            this.eat(TokenType.Punctuation);
+            this.eat(this.currentToken.type);
         } else {
             while ((this.currentToken.type as TokenType) !== TokenType.EOF && this.currentToken.value.toUpperCase() !== 'FROM') {
-                columns.push(this.currentToken.value);
-                this.eat(TokenType.Identifier);
+                let colExpr = '';
+                while ((this.currentToken.type as TokenType) !== TokenType.EOF && (this.currentToken.value as string) !== ',' && this.currentToken.value.toUpperCase() !== 'FROM') {
+                    const valStr = this.currentToken.value as string;
+                    if (colExpr.length > 0 && /[a-zA-Z0-9_]/.test(colExpr[colExpr.length - 1]) && /[a-zA-Z0-9_]/.test(valStr[0])) {
+                        colExpr += ' ';
+                    }
+                    colExpr += valStr;
+                    this.eat(this.currentToken.type);
+                }
+                columns.push(colExpr.trim());
                 if ((this.currentToken.value as string) === ',') {
                     this.eat(TokenType.Punctuation);
                 }
@@ -136,7 +312,74 @@ export class Parser {
         const tableName = this.currentToken.value;
         this.eat(TokenType.Identifier);
 
+        const joins: JoinClause[] = [];
+        while (this.currentToken.type === TokenType.Identifier && ['INNER', 'LEFT', 'CROSS', 'JOIN'].includes(this.currentToken.value.toUpperCase() as any)) {
+            let joinType = this.currentToken.value.toUpperCase();
+            this.eat(TokenType.Identifier);
+            if (joinType !== 'JOIN' && this.currentToken.value.toUpperCase() === 'JOIN') {
+                this.eat(TokenType.Identifier);
+            }
+
+            const joinTable = this.currentToken.value;
+            this.eat(TokenType.Identifier);
+
+            let onClause: WhereClause | undefined;
+            if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'ON') {
+                this.eat(TokenType.Identifier);
+                onClause = this.parseCondition();
+            }
+
+            joins.push({
+                type: joinType as any,
+                table: joinTable,
+                ...(onClause ? { on: onClause } : {})
+            });
+        }
+
         const where = this.parseWhere();
+
+        let groupBy: string[] | undefined;
+        let having: WhereClause | undefined;
+
+        if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'GROUP') {
+            this.eat(TokenType.Identifier);
+            if (this.currentToken.value.toUpperCase() === 'BY') this.eat(TokenType.Identifier);
+            groupBy = [];
+            while ((this.currentToken.type as TokenType) !== TokenType.EOF && !['HAVING', 'ORDER', 'LIMIT', 'UNION'].includes(this.currentToken.value.toUpperCase())) {
+                let gbCol = this.currentToken.value;
+                this.eat(this.currentToken.type);
+                if ((this.currentToken.value as string) === '.') {
+                    this.eat(TokenType.Punctuation);
+                    gbCol += '.' + this.currentToken.value;
+                    this.eat(TokenType.Identifier);
+                }
+                groupBy.push(gbCol);
+                
+                if ((this.currentToken.value as string) === ',') {
+                    this.eat(TokenType.Punctuation);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'HAVING') {
+            this.eat(TokenType.Identifier);
+            having = this.parseCondition();
+        }
+
+        let union: SelectStatement[] | undefined;
+        if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'UNION') {
+            union = [];
+            while (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'UNION') {
+                this.eat(TokenType.Identifier);
+                if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'ALL') {
+                    this.eat(TokenType.Identifier);
+                }
+                const nextSelect = this.parseSelect();
+                union.push(nextSelect);
+            }
+        }
 
         let limit: number | undefined;
         let offset: number | undefined;
@@ -159,31 +402,115 @@ export class Parser {
             columns,
             ...(where ? { where } : {}),
             ...(limit !== undefined ? { limit } : {}),
-            ...(offset !== undefined ? { offset } : {})
+            ...(offset !== undefined ? { offset } : {}),
+            ...(joins.length > 0 ? { joins } : {}),
+            ...(groupBy ? { groupBy } : {}),
+            ...(having ? { having } : {}),
+            ...(union ? { union } : {})
         };
     }
 
     private parseWhere(): WhereClause | undefined {
         if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'WHERE') {
             this.eat(TokenType.Identifier);
-            
-            const col = this.currentToken.value;
-            this.eat(TokenType.Identifier);
+            return this.parseCondition();
+        }
+        return undefined;
+    }
 
-            let op = this.currentToken.value;
+    private parseCondition(): WhereClause {
+        let left: WhereClause = this.parseSimpleCondition();
+        
+        while (this.currentToken.type === TokenType.Identifier && 
+              (this.currentToken.value.toUpperCase() === 'AND' || this.currentToken.value.toUpperCase() === 'OR')) {
+            const logicalOp = this.currentToken.value.toUpperCase();
+            this.eat(TokenType.Identifier);
+            const right = this.parseSimpleCondition();
+            
+            if (logicalOp === 'AND') {
+                left = { column: '', operator: 'AND', value: null, and: left, or: right };
+            } else {
+                left = { column: '', operator: 'OR', value: null, and: left, or: right };
+            }
+        }
+        return left;
+    }
+
+    private parseSimpleCondition(): WhereClause {
+        let fullCol = this.currentToken.value;
+        this.eat(TokenType.Identifier); 
+        if ((this.currentToken.value as string) === '.') {
+            this.eat(TokenType.Punctuation);
+            fullCol += '.' + this.currentToken.value;
+            this.eat(TokenType.Identifier);
+        }
+
+        let op = this.currentToken.value;
+        if (this.currentToken.type === TokenType.Operator || this.currentToken.type === TokenType.Punctuation || this.currentToken.type === TokenType.Identifier) {
+            op = this.currentToken.value.toUpperCase();
             this.eat(this.currentToken.type);
-            if ((op === '>' || op === '<' || op === '!') && (this.currentToken.value as string) === '=') {
-                op += '=';
+        }
+
+        if (op === 'IS') {
+            if (this.currentToken.value.toUpperCase() === 'NOT') {
+                this.eat(TokenType.Identifier);
+                if (this.currentToken.value.toUpperCase() === 'NULL') {
+                    this.eat(TokenType.Identifier);
+                    return { column: fullCol, operator: 'IS NOT NULL', value: null };
+                }
+            } else if (this.currentToken.value.toUpperCase() === 'NULL') {
+                this.eat(TokenType.Identifier);
+                return { column: fullCol, operator: 'IS NULL', value: null };
+            }
+        } else if (op === 'LIKE') {
+            const val = this.currentToken.value;
+            this.eat(TokenType.String);
+            return { column: fullCol, operator: 'LIKE', value: val };
+        } else if (op === 'IN') {
+            this.eat(TokenType.Punctuation); // '('
+            const vals: any[] = [];
+            while ((this.currentToken.value as string) !== ')') {
+                let v: any = this.currentToken.value;
+                if ((this.currentToken.type as TokenType) === TokenType.Number) v = Number(v);
+                if ((this.currentToken.value as string) !== ',') {
+                    vals.push(v);
+                }
+                this.eat(this.currentToken.type);
+            }
+            this.eat(TokenType.Punctuation); // ')'
+            return { column: fullCol, operator: 'IN', value: vals };
+        } else if (op === 'BETWEEN') {
+            let val1: any = this.currentToken.value;
+            if ((this.currentToken.type as TokenType) === TokenType.Number) val1 = Number(val1);
+            this.eat(this.currentToken.type);
+            
+            if (this.currentToken.value.toUpperCase() !== 'AND') throw new ParserError("Expected AND for BETWEEN", this.currentToken.line, this.currentToken.column);
+            this.eat(TokenType.Identifier);
+            
+            let val2: any = this.currentToken.value;
+            if ((this.currentToken.type as TokenType) === TokenType.Number) val2 = Number(val2);
+            this.eat(this.currentToken.type);
+            
+            return { column: fullCol, operator: 'BETWEEN', value: [val1, val2] };
+        } else {
+            let val: any = this.currentToken.value;
+            if ((this.currentToken.value as string) === '(') {
+                this.eat(TokenType.Punctuation);
+                if (this.currentToken.value.toUpperCase() === 'SELECT') {
+                    val = this.parseSelect();
+                } else {
+                    throw new ParserError("Only subqueries are supported in parens here", this.currentToken.line, this.currentToken.column);
+                }
+                this.eat(TokenType.Punctuation); // ')'
+            } else {
+                if ((this.currentToken.type as TokenType) === TokenType.Number) val = Number(val);
+                else if ((this.currentToken.type as TokenType) === TokenType.String) val = val.toString();
                 this.eat(this.currentToken.type);
             }
 
-            let val: any = this.currentToken.value;
-            if ((this.currentToken.type as TokenType) === TokenType.Number) val = Number(val);
-            this.eat(this.currentToken.type);
-
-            return { column: col, operator: op, value: val };
+            return { column: fullCol, operator: op, value: val };
         }
-        return undefined;
+        throw new ParserError("Failed to parse condition", this.currentToken.line, this.currentToken.column);
     }
 
     private parseUpdate(): UpdateStatement {
@@ -200,7 +527,12 @@ export class Parser {
         while ((this.currentToken.type as TokenType) !== TokenType.EOF && this.currentToken.value.toUpperCase() !== 'WHERE') {
             const col = this.currentToken.value;
             this.eat(TokenType.Identifier);
-            this.eat(TokenType.Punctuation); // '='
+            const cType = this.currentToken.type as TokenType;
+            if (cType === TokenType.Operator || cType === TokenType.Punctuation) {
+                this.eat(cType); // '='
+            } else {
+                this.eat(TokenType.Operator);
+            }
             
             let val: any = this.currentToken.value;
             if ((this.currentToken.type as TokenType) === TokenType.Number) val = Number(val);
@@ -362,6 +694,16 @@ export class Parser {
                     } else {
                         colDef.references = { table: refTable };
                     }
+                } else if (val === 'CHECK') {
+                    this.eat(TokenType.Identifier);
+                    this.eat(TokenType.Punctuation); // '('
+                    let expr = '';
+                    while ((this.currentToken.value as string) !== ')') {
+                        expr += " " + this.currentToken.value;
+                        this.eat(this.currentToken.type);
+                    }
+                    this.eat(TokenType.Punctuation); // ')'
+                    colDef.check = expr.trim();
                 } else {
                     throw new ParserError(`Unexpected column constraint/modifier: '${val}'`, this.currentToken.line, this.currentToken.column);
                 }
