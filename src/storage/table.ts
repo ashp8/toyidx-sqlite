@@ -35,8 +35,6 @@ export class TableManager {
             const store = tx.objectStore('_data');
             
             // Fetch records by bound array keys
-            let lower = [tableName];
-            let upper = [tableName, "\uffff"];
             if (typeof indexedDB !== 'undefined') {
                  // Adjusting bounds for IDB
                 const range = IDBKeyRange.bound([tableName, -Infinity], [tableName, Infinity]);

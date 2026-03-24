@@ -129,8 +129,12 @@ export class Parser {
             const col = this.currentToken.value;
             this.eat(TokenType.Identifier);
 
-            const op = this.currentToken.value;
+            let op = this.currentToken.value;
             this.eat(this.currentToken.type);
+            if ((op === '>' || op === '<' || op === '!') && (this.currentToken.value as string) === '=') {
+                op += '=';
+                this.eat(this.currentToken.type);
+            }
 
             let val: any = this.currentToken.value;
             if ((this.currentToken.type as TokenType) === TokenType.Number) val = Number(val);
