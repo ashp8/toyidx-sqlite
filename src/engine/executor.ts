@@ -33,6 +33,13 @@ export class Executor {
     }
 
     private async executeCreateTable(stmt: CreateTableStatement): Promise<void> {
+        if (stmt.ifNotExists) {
+            const existing = await this.table.getSchema(stmt.name);
+            if (existing) {
+                return; // Schema already exists, do nothing
+            }
+        }
+
         await this.table.saveSchema(stmt.name, {
             columns: stmt.columns,
             primaryKey: stmt.primaryKey
