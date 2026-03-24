@@ -134,25 +134,33 @@ describe('ToySQLite Integrated Engine', () => {
     it('benchmark: 1 million rows insertion, scan, and indexing', async () => {
         await db.execute('CREATE TABLE big_data (id INTEGER, c1 VARCHAR, c2 VARCHAR, c3 VARCHAR, c4 VARCHAR, c5 VARCHAR, c6 VARCHAR, c7 VARCHAR, c8 VARCHAR, name VARCHAR)');
 
-        const TOTAL = 1000; // Testing 100k raw document objects! Bypassing Toy AST string-parser limits completely to test purely underlying DB read/write speeds.
+        const TOTAL = 100000; // Testing 100k raw document objects! Bypassing Toy AST string-parser limits completely to test purely underlying DB read/write speeds.
+        const BATCH_SIZE = 1000;
         const startInsert = performance.now();
         const tableMgr = (db as any).executor.table;
 
-        // Write directly to DB storage manager in a single bulk transaction to safely execute 100,000 row dumps natively without crashing Node IDB mocks
-        const records = [];
+        // Write directly to DB storage manager in batches to safely execute 100,000 row dumps natively without crashing Node IDB mocks
+        let records = [];
         for (let i = 0; i < TOTAL; i++) {
             const name = (i === TOTAL - 1) ? 'FindMe' : 'Filler';
             records.push({
                 _rowid: i, id: i, c1: 'A', c2: 'B', c3: 'C', c4: 'D', c5: 'E', c6: 'F', c7: 'G', c8: 'H', name
             });
+
+            if (records.length >= BATCH_SIZE) {
+                await tableMgr.bulkInsertRecords('big_data', records);
+                records = [];
+            }
         }
-        await tableMgr.bulkInsertRecords('big_data', records);
+        if (records.length > 0) {
+            await tableMgr.bulkInsertRecords('big_data', records);
+        }
         await db.commit();
         const insertTime = performance.now() - startInsert;
         console.log(`Insertion of ${TOTAL} rows took ${insertTime}ms`);
 
         const startScan = performance.now();
-        const resScan = await db.execute("SELECT * FROM big_data WHERE name = 'FindMe'");
+        const resScan = await db.execute("SELECT id FROM big_data WHERE name = 'FindMe'");
         const scanTime = performance.now() - startScan;
         console.log(`Unindexed Full Table Scan took ${scanTime}ms`);
         expect(resScan.length).toBe(1);
