@@ -15,6 +15,20 @@ export interface Token {
     column: number;
 };
 
+export class ParserError extends Error {
+    constructor(
+        message: string,
+        public line: number,
+        public column: number,
+        public expected?: string,
+        public actual?: string
+    ) {
+        super(`${message} at line ${line} column ${column}`);
+        this.name = 'ParserError';
+    }
+}
+
+
 export type Statement = CreateTableStatement | InsertStatement | SelectStatement | UpdateStatement | DeleteStatement | CreateIndexStatement | DropIndexStatement;
 
 export interface CreateTableStatement {

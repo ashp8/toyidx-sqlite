@@ -71,8 +71,21 @@ describe('ToySQLite Integrated Engine', () => {
         expect(result[0].val).toBe('100');
     });
 
-    it('should throw an error on invalid syntax', async () => {
-        await expect(db.execute('CREATE INVALID SYNTAX')).rejects.toThrow();
+    it('should throw an informative ParserError on invalid syntax', async () => {
+        await expect(db.execute('CREATE INVALID SYNTAX')).rejects.toThrow(
+            /Unexpected token after CREATE: 'INVALID' at line 1 column 8/
+        );
+    });
+
+    it('should track line and column numbers properly in multi-line queries and catch invalid modifiers', async () => {
+        const query = `CREATE TABLE test (
+    id INTEGER,
+    name VARCHAR(255)
+    MISSING_COMMA FLOAT
+)`;
+        await expect(db.execute(query)).rejects.toThrow(
+            /Unexpected column constraint\/modifier: 'MISSING_COMMA' at line 4 column 5/
+        );
     });
 
     it('should throw an error when inserting into a non-existent table', async () => {

@@ -1,5 +1,5 @@
 import { Lexer } from "./lexer";
-import { CreateTableStatement, Statement, Token, TokenType, InsertStatement, SelectStatement, UpdateStatement, DeleteStatement, WhereClause, CreateIndexStatement, DropIndexStatement } from "./types";
+import { CreateTableStatement, Statement, Token, TokenType, InsertStatement, SelectStatement, UpdateStatement, DeleteStatement, WhereClause, CreateIndexStatement, DropIndexStatement, ParserError } from "./types";
 
 export class Parser {
     private currentToken: Token;
@@ -11,7 +11,7 @@ export class Parser {
         if (this.currentToken.type === type) {
             this.currentToken = this.lexer.nexToken();
         } else {
-            throw new Error(`Expected token ${type} but got ${this.currentToken.type}`);
+            throw new ParserError(`Expected token ${TokenType[type]} but got ${TokenType[this.currentToken.type]} '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column, TokenType[type], TokenType[this.currentToken.type]);
         }
     }
 
@@ -23,19 +23,19 @@ export class Parser {
             if (next === 'TABLE') return this.parseCreateTable();
             if (next === 'UNIQUE') return this.parseCreateIndex(true);
             if (next === 'INDEX') return this.parseCreateIndex(false);
-            throw new Error(`Unexpected token after CREATE: ${next}`);
+            throw new ParserError(`Unexpected token after CREATE: '${next}'`, this.currentToken.line, this.currentToken.column);
         }
         if (val == 'DROP') {
             this.eat(TokenType.Identifier);
             const next = this.currentToken.value.toUpperCase();
             if (next === 'INDEX') return this.parseDropIndex();
-            throw new Error(`Unexpected token after DROP: ${next}`);
+            throw new ParserError(`Unexpected token after DROP: '${next}'`, this.currentToken.line, this.currentToken.column);
         }
         if (val == 'INSERT') return this.parseInsert();
         if (val == 'SELECT') return this.parseSelect();
         if (val == 'UPDATE') return this.parseUpdate();
         if (val == 'DELETE') return this.parseDelete();
-        throw new Error(`Unexpected token ${val}`);
+        throw new ParserError(`Unexpected query keyword: '${val}'`, this.currentToken.line, this.currentToken.column);
     }
 
     private parseInsert(): InsertStatement {
@@ -66,7 +66,7 @@ export class Parser {
         if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'VALUES') {
             this.eat(TokenType.Identifier);
         } else {
-            throw new Error(`Expected VALUES but got ${this.currentToken.value}`);
+            throw new ParserError(`Expected VALUES but got '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column);
         }
 
         const values: any[][] = [];
@@ -130,7 +130,7 @@ export class Parser {
         if (this.currentToken.type === TokenType.Identifier && this.currentToken.value.toUpperCase() === 'FROM') {
             this.eat(TokenType.Identifier);
         } else {
-            throw new Error(`Expected FROM but got ${this.currentToken.value}`);
+            throw new ParserError(`Expected FROM but got '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column);
         }
 
         const tableName = this.currentToken.value;
@@ -192,7 +192,7 @@ export class Parser {
         this.eat(TokenType.Identifier);
 
         if (this.currentToken.value.toUpperCase() !== 'SET') {
-            throw new Error(`Expected SET but got ${this.currentToken.value}`);
+            throw new ParserError(`Expected SET but got '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column);
         }
         this.eat(TokenType.Identifier);
 
@@ -249,7 +249,7 @@ export class Parser {
         this.eat(TokenType.Identifier);
 
         if (this.currentToken.value.toUpperCase() !== 'ON') {
-            throw new Error(`Expected ON but got ${this.currentToken.value}`);
+            throw new ParserError(`Expected ON but got '${this.currentToken.value}'`, this.currentToken.line, this.currentToken.column);
         }
         this.eat(TokenType.Identifier);
 
@@ -363,7 +363,7 @@ export class Parser {
                         colDef.references = { table: refTable };
                     }
                 } else {
-                    this.eat(this.currentToken.type);
+                    throw new ParserError(`Unexpected column constraint/modifier: '${val}'`, this.currentToken.line, this.currentToken.column);
                 }
             }
 
