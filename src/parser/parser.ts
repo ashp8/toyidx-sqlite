@@ -508,9 +508,23 @@ export class Parser {
                 }
                 this.eat(TokenType.Punctuation); // ')'
             } else {
-                if ((this.currentToken.type as TokenType) === TokenType.Number) val = Number(val);
-                else if ((this.currentToken.type as TokenType) === TokenType.String) val = val.toString();
-                this.eat(this.currentToken.type);
+                if ((this.currentToken.type as TokenType) === TokenType.Number) {
+                    val = Number(val);
+                    this.eat(this.currentToken.type);
+                } else if ((this.currentToken.type as TokenType) === TokenType.String) {
+                    val = val.toString();
+                    this.eat(this.currentToken.type);
+                } else if ((this.currentToken.type as TokenType) === TokenType.Identifier) {
+                    val = this.currentToken.value.toString();
+                    this.eat(TokenType.Identifier);
+                    if ((this.currentToken.value as string) === '.') {
+                        this.eat(TokenType.Punctuation);
+                        val += '.' + this.currentToken.value;
+                        this.eat(TokenType.Identifier);
+                    }
+                } else {
+                    this.eat(this.currentToken.type);
+                }
             }
 
             return { column: fullCol, operator: op, value: val };

@@ -18,31 +18,48 @@ export class Executor {
     }
 
     public async execute(stmt: Statement): Promise<any> {
+        let result;
         switch (stmt.type) {
             case 'CREATE_TABLE':
-                return this.executeCreateTable(stmt as CreateTableStatement);
+                result = await this.executeCreateTable(stmt as CreateTableStatement);
+                break;
             case 'INSERT':
-                return this.executeInsert(stmt as InsertStatement);
+                result = await this.executeInsert(stmt as InsertStatement);
+                break;
             case 'SELECT':
-                return this.executeSelect(stmt as SelectStatement);
+                result = await this.executeSelect(stmt as SelectStatement);
+                break;
             case 'UPDATE':
             case 'DELETE':
-                return this.executeMutations(stmt as UpdateStatement | DeleteStatement);
+                result = await this.executeMutations(stmt as UpdateStatement | DeleteStatement);
+                break;
             case 'CREATE_INDEX':
-                return this.executeCreateIndex(stmt as CreateIndexStatement);
+                result = await this.executeCreateIndex(stmt as CreateIndexStatement);
+                break;
             case 'DROP_INDEX':
-                return this.executeDropIndex(stmt as DropIndexStatement);
+                result = await this.executeDropIndex(stmt as DropIndexStatement);
+                break;
             case 'TRANSACTION':
-                return this.executeTransaction(stmt as TransactionStatement);
+                result = await this.executeTransaction(stmt as TransactionStatement);
+                break;
             case 'CREATE_VIEW':
-                return this.executeCreateView(stmt as CreateViewStatement);
+                result = await this.executeCreateView(stmt as CreateViewStatement);
+                break;
             case 'DROP_TABLE':
-                return this.executeDropTable(stmt as DropTableStatement);
+                result = await this.executeDropTable(stmt as DropTableStatement);
+                break;
             case 'ALTER_TABLE':
-                return this.executeAlterTable(stmt as AlterTableStatement);
+                result = await this.executeAlterTable(stmt as AlterTableStatement);
+                break;
             default:
                 throw new Error(`Unsupported statement type: ${(stmt as any).type}`);
         }
+
+        if (!this.inTransaction && stmt.type !== 'SELECT' && stmt.type !== 'TRANSACTION') {
+            await this.commitWAL();
+        }
+
+        return result;
     }
 
     private async executeCreateTable(stmt: CreateTableStatement): Promise<void> {
@@ -205,14 +222,14 @@ export class Executor {
         return ids;
     }
 
-    private async applyWhere(record: any, where?: WhereClause): Promise<boolean> {
+    private async applyWhere(record: any, where?: WhereClause, treatRhsAsColumn: boolean = false): Promise<boolean> {
         if (!where) return true;
 
         if (where.operator === 'AND' && where.and && where.or) {
-            return (await this.applyWhere(record, where.and)) && (await this.applyWhere(record, where.or));
+            return (await this.applyWhere(record, where.and, treatRhsAsColumn)) && (await this.applyWhere(record, where.or, treatRhsAsColumn));
         }
         if (where.operator === 'OR' && where.and && where.or) {
-            return (await this.applyWhere(record, where.and)) || (await this.applyWhere(record, where.or));
+            return (await this.applyWhere(record, where.and, treatRhsAsColumn)) || (await this.applyWhere(record, where.or, treatRhsAsColumn));
         }
 
         let val = record[where.column];
@@ -227,6 +244,12 @@ export class Executor {
                 rhs = Object.values(subRes[0])[0];
             } else {
                 rhs = null;
+            }
+        } else if (treatRhsAsColumn && typeof rhs === 'string') {
+            if (record[rhs] !== undefined) {
+                rhs = record[rhs];
+            } else if (rhs.includes('.') && record[rhs.split('.')[1] as string] !== undefined) {
+                rhs = record[rhs.split('.')[1] as string];
             }
         }
 
@@ -263,16 +286,48 @@ export class Executor {
         });
     }
 
-    private async getFullTableData(tableName: string): Promise<any[]> {
-        const all = await this.table.getAllRecords(tableName);
+    private async getFullTableData(tableName: string, where?: WhereClause): Promise<any[]> {
         const uncommitted = await this.wal.readAll();
         const tableWal = uncommitted.filter((w: WALEntry) => w.table === tableName);
-        
-        let current: any[] = [...all];
+        const hasMutations = tableWal.some(w => w.type === 'UPDATE' || w.type === 'DELETE');
+
+        let useIndex = false;
+        let indexName = '';
+        let indexValue: any = null;
+        let indexColumn = '';
+
+        if (!hasMutations && where && where.operator === '=' && !where.or) {
+            const schema = await this.table.getSchema(tableName);
+            const indexes = schema?.indexes || [];
+            
+            let colName = where.column;
+            if (colName.includes('.')) {
+                const parts = colName.split('.');
+                if (parts[0] === tableName) colName = parts[1] as string;
+            }
+
+            const idx = indexes.find((i: any) => i.column === colName);
+            if (idx) {
+                useIndex = true;
+                indexName = idx.name;
+                indexColumn = colName;
+                indexValue = where.value;
+            }
+        }
+
+        let current: any[];
+        if (useIndex) {
+            current = await this.table.getRowsByIndex(tableName, indexName, indexValue);
+        } else {
+            const all = await this.table.getAllRecords(tableName);
+            current = [...all];
+        }
         
         for (const entry of tableWal) {
             if (entry.type === 'INSERT') {
-                current.push(entry.payload);
+                if (!useIndex || entry.payload[indexColumn] === indexValue) {
+                    current.push(entry.payload);
+                }
             } else if (entry.type === 'UPDATE') {
                 const q = entry.payload as UpdateStatement;
                 for (let i = 0; i < current.length; i++) {
@@ -323,25 +378,79 @@ export class Executor {
     }
 
     private async executeSelect(stmt: SelectStatement): Promise<any[]> {
-        let records = await this.getFullTableData(stmt.table);
+        let records = await this.getFullTableData(stmt.table, stmt.where);
 
         if (stmt.joins) {
             for (const join of stmt.joins) {
                 const joinData = await this.getFullTableData(join.table);
+                
+                let useHashJoin = false;
+                let hashJoinColLeft = '';
+                let hashJoinColRight = '';
+                
+                if (join.on && join.on.operator === '=' && typeof join.on.value === 'string' && join.on.value.includes('.')) {
+                     const leftParts = join.on.column.split('.');
+                     const rightParts = join.on.value.split('.');
+                     if (leftParts.length === 2 && rightParts.length === 2) {
+                          if (Object.keys(records[0] || {}).some(k => k.startsWith(leftParts[0] + '.')) || leftParts[0] === stmt.table) {
+                              hashJoinColLeft = join.on.column;
+                              hashJoinColRight = join.on.value;
+                              useHashJoin = true;
+                          } else {
+                              hashJoinColLeft = join.on.value;
+                              hashJoinColRight = join.on.column;
+                              useHashJoin = true;
+                          }
+                     }
+                }
+
+                let joinDataMap: Map<any, any[]> | null = null;
+                if (useHashJoin) {
+                    joinDataMap = new Map();
+                    const rawRightCol = hashJoinColRight.split('.')[1] as string;
+                    for (const r2 of joinData) {
+                        const val = r2[rawRightCol] !== undefined ? r2[rawRightCol] : r2[hashJoinColRight];
+                        if (val !== undefined && val !== null) {
+                            if (!joinDataMap.has(val)) joinDataMap.set(val, []);
+                            joinDataMap.get(val)!.push(r2);
+                        }
+                    }
+                }
+
                 const newRecords: any[] = [];
                 for (const r1 of records) {
                     let matched = false;
-                    for (const r2 of joinData) {
-                        const merged = { ...r1 };
-                        Object.keys(r1).forEach(k => merged[`${stmt.table}.${k}`] = r1[k]);
-                        Object.keys(r2).forEach(k => merged[`${join.table}.${k}`] = r2[k]);
-                        Object.keys(r2).forEach(k => merged[k] = r2[k]);
+                    
+                    if (useHashJoin && joinDataMap) {
+                        const r1RawLeftCol = hashJoinColLeft.split('.')[1] as string;
+                        const leftVal = r1[hashJoinColLeft] !== undefined ? r1[hashJoinColLeft] : r1[r1RawLeftCol];
+                        const matchingR2s = joinDataMap.get(leftVal) || [];
                         
-                        if (!join.on || await this.applyWhere(merged, join.on)) {
-                            newRecords.push(merged);
-                            matched = true;
+                        for (const r2 of matchingR2s) {
+                            const merged = { ...r1 };
+                            Object.keys(r1).forEach(k => merged[`${stmt.table}.${k}`] = r1[k]);
+                            Object.keys(r2).forEach(k => merged[`${join.table}.${k}`] = r2[k]);
+                            Object.keys(r2).forEach(k => merged[k] = r2[k]);
+                            
+                            if (await this.applyWhere(merged, join.on, true)) {
+                                newRecords.push(merged);
+                                matched = true;
+                            }
+                        }
+                    } else {
+                        for (const r2 of joinData) {
+                            const merged = { ...r1 };
+                            Object.keys(r1).forEach(k => merged[`${stmt.table}.${k}`] = r1[k]);
+                            Object.keys(r2).forEach(k => merged[`${join.table}.${k}`] = r2[k]);
+                            Object.keys(r2).forEach(k => merged[k] = r2[k]);
+                            
+                            if (!join.on || await this.applyWhere(merged, join.on, true)) {
+                                newRecords.push(merged);
+                                matched = true;
+                            }
                         }
                     }
+                    
                     if (!matched && join.type === 'LEFT') {
                         const merged = { ...r1 };
                         Object.keys(r1).forEach(k => merged[`${stmt.table}.${k}`] = r1[k]);
