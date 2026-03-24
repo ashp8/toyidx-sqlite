@@ -29,6 +29,22 @@ export class TableManager {
         });
     }
 
+    public async bulkInsertRecords(tableName: string, records: any[]): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const tx = this.db.getDB().transaction('_data', 'readwrite');
+            const store = tx.objectStore('_data');
+            let completed = 0;
+            if (records.length === 0) return resolve();
+            for (let i = 0; i < records.length; i++) {
+                const request = store.put(records[i], [tableName, records[i]._rowid]);
+                request.onsuccess = () => {
+                    if (++completed === records.length) resolve();
+                };
+                request.onerror = () => reject(request.error);
+            }
+        });
+    }
+
     public async deleteRecord(tableName: string, rowId: number | string): Promise<void> {
         return new Promise((resolve, reject) => {
             const tx = this.db.getDB().transaction('_data', 'readwrite');
