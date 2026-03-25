@@ -10,7 +10,8 @@
     "build": "tsup src/index.ts --format esm,cjs --dts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "profile": "tsx scripts/profiler.ts"
+    "profile": "tsx scripts/profiler.ts",
+    "wasm:build": "./scripts/build_wasm.sh"
   },
   "keywords": [],
   "author": "",

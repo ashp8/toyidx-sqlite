@@ -6,8 +6,14 @@ export class Lexer {
     private line = 1;
     private col = 1;
 
-    constructor(private sql: string) {
-        this.char = sql[0] || "";
+    private wasmLexer: any;
+
+    constructor(private sql: string, wasmModule?: any) {
+        if (wasmModule && wasmModule.Lexer) {
+            this.wasmLexer = new wasmModule.Lexer(sql);
+        } else {
+            this.char = sql[0] || "";
+        }
     }
 
     private advance() {
@@ -22,6 +28,19 @@ export class Lexer {
     }
 
     public nexToken(): Token {
+        if (this.wasmLexer) {
+            const token = this.wasmLexer.nextToken();
+            // Emscripten enums might be returned as objects with a .value property or similar.
+            // We want the numeric value to match TS TokenType enum.
+            const type = typeof token.type === 'object' ? token.type.value : token.type;
+            return {
+                type: type,
+                value: token.value,
+                line: token.line,
+                column: token.column
+            };
+        }
+
         while (this.char && /\s/.test(this.char)) this.advance();
         if (!this.char) return {
             type: TokenType.EOF, value: "", line: this.line, column: this.col
@@ -94,6 +113,12 @@ export class Lexer {
         this.advance();
         return {
             type: TokenType.Punctuation, value: val, line: startLine, column: startCol
+        }
+    }
+
+    public dispose() {
+        if (this.wasmLexer && this.wasmLexer.delete) {
+            this.wasmLexer.delete();
         }
     }
 }
