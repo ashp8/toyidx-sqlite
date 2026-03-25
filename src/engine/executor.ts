@@ -286,7 +286,7 @@ export class Executor {
         });
     }
 
-    private async getFullTableData(tableName: string, where?: WhereClause): Promise<any[]> {
+    public async getFullTableData(tableName: string, where?: WhereClause): Promise<any[]> {
         const uncommitted = await this.wal.readAll();
         const tableWal = uncommitted.filter((w: WALEntry) => w.table === tableName);
         const hasMutations = tableWal.some(w => w.type === 'UPDATE' || w.type === 'DELETE');
