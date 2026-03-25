@@ -26,16 +26,15 @@ bool evaluateWhere(val record, std::shared_ptr<WhereClause> where) {
     if (where->op == "!=" || where->op == "<>") return !recVal.strictlyEquals(where->value);
     
     std::string rType = recVal.typeOf().as<std::string>();
-    std::string wType = where->value.typeOf().as<std::string>();
 
-    if (rType == "number" && wType == "number") {
+    if (rType == "number") {
         double r = recVal.as<double>();
         double w = where->value.as<double>();
         if (where->op == ">") return r > w;
         if (where->op == "<") return r < w;
         if (where->op == ">=") return r >= w;
         if (where->op == "<=") return r <= w;
-    } else if (rType == "string" && wType == "string") {
+    } else {
         std::string r = recVal.as<std::string>();
         std::string w = where->value.as<std::string>();
         if (where->op == ">") return r > w;
