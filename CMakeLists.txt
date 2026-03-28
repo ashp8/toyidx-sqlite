@@ -19,8 +19,13 @@ if(EMSCRIPTEN)
     set_target_properties(sql_engine PROPERTIES OUTPUT_NAME "sql_engine")
     set_target_properties(sql_engine PROPERTIES SUFFIX ".js")
     
+    target_compile_options(sql_engine PRIVATE -O3 -flto)
+
     target_link_options(sql_engine PRIVATE
         "--bind"
+        "-O3"
+        "-flto"
+        "--closure" "1"
         "-sMODULARIZE=1"
         "-sEXPORT_ES6=1"
         "-sENVIRONMENT=web,node"

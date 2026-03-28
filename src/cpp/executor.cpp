@@ -1,7 +1,7 @@
 #include "executor.hpp"
-#include <emscripten/val.h>
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 
 using namespace emscripten;
 
@@ -11,44 +11,137 @@ Executor::Executor(IStorage& storage) : storage(storage) {}
 
 val Executor::execute(std::shared_ptr<Statement> stmt) {
     if (stmt->type() == "SELECT") {
-        return executeSelect(std::static_pointer_cast<SelectStatement>(stmt));
+        auto rows = executeSelectNative(std::static_pointer_cast<SelectStatement>(stmt));
+        return rowsToJsArray(rows);
     }
     return val::array();
 }
 
-bool evaluateWhere(val record, std::shared_ptr<WhereClause> where) {
+bool Executor::evaluateWhere(const NativeRow& record, const std::shared_ptr<WhereClause>& where) {
     if (!where) return true;
     
-    val recVal = record[where->column];
-    if (recVal.isUndefined() || recVal.isNull()) return false;
+    auto it = record.find(where->column);
+    if (it == record.end()) return false;
+    const NativeValue& recVal = it->second;
     
-    if (where->op == "=") return recVal.strictlyEquals(where->value);
-    if (where->op == "!=" || where->op == "<>") return !recVal.strictlyEquals(where->value);
+    if (recVal.isNull()) return false;
     
-    std::string rType = recVal.typeOf().as<std::string>();
+    const NativeValue& wVal = where->value;
+    const std::string& op = where->op;
 
-    if (rType == "number") {
-        double r = recVal.as<double>();
-        double w = where->value.as<double>();
-        if (where->op == ">") return r > w;
-        if (where->op == "<") return r < w;
-        if (where->op == ">=") return r >= w;
-        if (where->op == "<=") return r <= w;
-    } else {
-        std::string r = recVal.as<std::string>();
-        std::string w = where->value.as<std::string>();
-        if (where->op == ">") return r > w;
-        if (where->op == "<") return r < w;
-    }
+    if (op == "=") return recVal == wVal;
+    if (op == "!=" || op == "<>") return recVal != wVal;
+    if (op == ">") return recVal > wVal;
+    if (op == "<") return recVal < wVal;
+    if (op == ">=") return recVal >= wVal;
+    if (op == "<=") return recVal <= wVal;
     
     return false;
 }
 
-val Executor::executeSelect(std::shared_ptr<SelectStatement> stmt) {
-    val rawData = storage.getTableData(stmt->table);
-    val filtered = val::array();
+// Minimal JSON array parser — handles flat objects with string, number, null values.
+// Avoids the need for a full JSON library.
+std::vector<NativeRow> Executor::parseJsonRows(const std::string& json) {
+    std::vector<NativeRow> rows;
+    const char* p = json.c_str();
+    const char* end = p + json.size();
     
-    int length = rawData["length"].as<int>();
+    // Skip to array start
+    while (p < end && *p != '[') ++p;
+    if (p >= end) return rows;
+    ++p; // skip '['
+    
+    while (p < end) {
+        // Skip whitespace
+        while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',')) ++p;
+        if (p >= end || *p == ']') break;
+        
+        if (*p != '{') break;
+        ++p; // skip '{'
+        
+        NativeRow row;
+        
+        while (p < end && *p != '}') {
+            // Skip whitespace and commas
+            while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',')) ++p;
+            if (p >= end || *p == '}') break;
+            
+            // Parse key (expect quoted string)
+            if (*p != '"') break;
+            ++p;
+            const char* keyStart = p;
+            while (p < end && *p != '"') ++p;
+            std::string key(keyStart, p);
+            if (p < end) ++p; // skip closing quote
+            
+            // Skip colon
+            while (p < end && (*p == ' ' || *p == ':')) ++p;
+            
+            // Parse value
+            if (p >= end) break;
+            
+            if (*p == '"') {
+                // String value
+                ++p;
+                std::string val;
+                while (p < end && *p != '"') {
+                    if (*p == '\\' && p + 1 < end) {
+                        ++p;
+                        if (*p == 'n') val += '\n';
+                        else if (*p == 't') val += '\t';
+                        else if (*p == '"') val += '"';
+                        else if (*p == '\\') val += '\\';
+                        else val += *p;
+                    } else {
+                        val += *p;
+                    }
+                    ++p;
+                }
+                if (p < end) ++p; // skip closing quote
+                row[key] = NativeValue(val);
+            } else if (*p == 'n') {
+                // null
+                p += 4; // skip "null"
+                row[key] = NativeValue::null();
+            } else if (*p == '-' || (*p >= '0' && *p <= '9')) {
+                // Number
+                const char* numStart = p;
+                if (*p == '-') ++p;
+                while (p < end && ((*p >= '0' && *p <= '9') || *p == '.' || *p == 'e' || *p == 'E' || *p == '+' || *p == '-')) {
+                    // Avoid double-counting the initial minus
+                    if ((*p == '+' || *p == '-') && p > numStart && *(p-1) != 'e' && *(p-1) != 'E') break;
+                    ++p;
+                }
+                double num = std::stod(std::string(numStart, p));
+                row[key] = NativeValue(num);
+            } else {
+                // Skip unknown value
+                while (p < end && *p != ',' && *p != '}') ++p;
+            }
+        }
+        
+        if (p < end && *p == '}') ++p;
+        rows.push_back(std::move(row));
+    }
+    
+    return rows;
+}
+
+std::vector<NativeRow> Executor::executeSelectNative(std::shared_ptr<SelectStatement> stmt) {
+    // Get data as JSON string — single bridge call, then parse in C++
+    std::string jsonData = storage.getTableDataJson(stmt->table);
+    std::vector<NativeRow> allRows;
+    
+    if (jsonData.size() > 2) { // More than just "[]"
+        allRows = parseJsonRows(jsonData);
+    } else {
+        // Fallback to val-based transfer if JSON is empty/unavailable
+        val rawData = storage.getTableData(stmt->table);
+        allRows = jsArrayToRows(rawData);
+    }
+    
+    // Everything below is pure C++ — zero bridge calls
+    
     bool isCount = false;
     std::string countAlias = "COUNT(*)";
     
@@ -76,35 +169,37 @@ val Executor::executeSelect(std::shared_ptr<SelectStatement> stmt) {
 
     if (isCount) {
         int count = 0;
-        for (int i = 0; i < length; ++i) {
-            if (evaluateWhere(rawData[i], stmt->where)) {
+        for (const auto& row : allRows) {
+            if (evaluateWhere(row, stmt->where)) {
                 count++;
             }
         }
-        val resObj = val::object();
-        resObj.set(countAlias, count);
-        filtered.call<void>("push", resObj);
-        return filtered;
+        NativeRow resRow;
+        resRow[countAlias] = NativeValue(static_cast<double>(count));
+        return {resRow};
     }
 
-    for (int i = 0; i < length; ++i) {
-        val record = rawData[i];
-        if (evaluateWhere(record, stmt->where)) {
+    std::vector<NativeRow> results;
+    results.reserve(allRows.size());
+
+    for (const auto& row : allRows) {
+        if (evaluateWhere(row, stmt->where)) {
             if (skipped < offset) {
                 skipped++;
                 continue;
             }
             
             if (stmt->columns.size() == 1 && stmt->columns[0] == "*") {
-                filtered.call<void>("push", record);
+                results.push_back(row);
             } else {
-                val projected = val::object();
+                NativeRow projected;
                 for (const auto& col : stmt->columns) {
-                    if (record.hasOwnProperty(col.c_str())) {
-                         projected.set(col, record[col]);
+                    auto it = row.find(col);
+                    if (it != row.end()) {
+                        projected[col] = it->second;
                     }
                 }
-                filtered.call<void>("push", projected);
+                results.push_back(std::move(projected));
             }
 
             pushed++;
@@ -112,7 +207,7 @@ val Executor::executeSelect(std::shared_ptr<SelectStatement> stmt) {
         }
     }
     
-    return filtered;
+    return results;
 }
 
 } // namespace toy

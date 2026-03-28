@@ -1,8 +1,7 @@
 #pragma once
 
 #include "ast.hpp"
-#include <vector>
-#include <map>
+#include <emscripten/val.h>
 
 namespace toy {
 
@@ -11,6 +10,10 @@ class IStorage {
 public:
     virtual ~IStorage() = default;
     virtual emscripten::val getTableData(const std::string& tableName) = 0;
+    // Fast path: get data as JSON string for efficient transfer
+    virtual std::string getTableDataJson(const std::string& tableName) {
+        return "[]";
+    }
 };
 
 class Executor {
@@ -21,7 +24,13 @@ public:
 private:
     IStorage& storage;
 
-    emscripten::val executeSelect(std::shared_ptr<SelectStatement> stmt);
+    // Internal methods use native types — no emscripten::val
+    std::vector<NativeRow> executeSelectNative(std::shared_ptr<SelectStatement> stmt);
+    bool evaluateWhere(const NativeRow& record, const std::shared_ptr<WhereClause>& where);
+    
+    // Parse a simple JSON array of objects into NativeRows
+    // Handles flat objects with string/number/null values
+    std::vector<NativeRow> parseJsonRows(const std::string& json);
 };
 
 } // namespace toy

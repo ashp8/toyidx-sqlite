@@ -12,13 +12,61 @@ export interface EngineConfig {
     useWasm?: boolean;
 }
 
+// Simple LRU-style statement cache to avoid re-parsing identical SQL
+class StmtCache {
+    private cache = new Map<string, { stmt: any, hits: number }>();
+    private maxSize: number;
+
+    constructor(maxSize = 100) {
+        this.maxSize = maxSize;
+    }
+
+    get(sql: string): any | null {
+        const entry = this.cache.get(sql);
+        if (entry) {
+            entry.hits++;
+            return entry.stmt;
+        }
+        return null;
+    }
+
+    set(sql: string, stmt: any): void {
+        if (this.cache.size >= this.maxSize) {
+            // Evict least-hit entry
+            let minKey = '';
+            let minHits = Infinity;
+            for (const [key, val] of this.cache) {
+                if (val.hits < minHits) {
+                    minHits = val.hits;
+                    minKey = key;
+                }
+            }
+            if (minKey) {
+                const evicted = this.cache.get(minKey);
+                if (evicted?.stmt?.delete) evicted.stmt.delete();
+                this.cache.delete(minKey);
+            }
+        }
+        this.cache.set(sql, { stmt, hits: 1 });
+    }
+
+    clear(): void {
+        for (const [, entry] of this.cache) {
+            if (entry.stmt?.delete) entry.stmt.delete();
+        }
+        this.cache.clear();
+    }
+}
+
 export class ToySQLite {
     private db: Database;
     private executor: Executor;
     private wasmModule: any;
     private wasmExecutor: any;
     private _prefetchedData: Record<string, any[]> = {};
+    private _prefetchedJson: Record<string, string> = {};
     private config: EngineConfig;
+    private stmtCache = new StmtCache(50);
 
     constructor(dbName: string = 'toy_sqlite', version: number = 1, config: EngineConfig = {}) {
         this.db = new Database(dbName, version);
@@ -41,6 +89,9 @@ export class ToySQLite {
                 const StorageBridge = this.wasmModule.IStorage.extend("IStorage", {
                     getTableData: function(tableName: string) {
                         return self._prefetchedData[tableName] || [];
+                    },
+                    getTableDataJson: function(tableName: string) {
+                        return self._prefetchedJson[tableName] || '[]';
                     }
                 });
                 this.wasmExecutor = new this.wasmModule.Executor(new StorageBridge());
@@ -59,46 +110,63 @@ export class ToySQLite {
         if (this.config.useWasm && this.wasmModule) {
             let wasmStatement: any = null;
             try {
-                const lexer = new this.wasmModule.Lexer(sql);
-                const parser = new this.wasmModule.Parser(lexer);
-                try {
-                    wasmStatement = parser.parse();
-                } catch (e) {
-                    // Fallback to TS parser if Wasm parser fails
-                } finally {
-                    lexer.delete();
-                    parser.delete();
+                // Try cache first
+                const cached = this.stmtCache.get(sql);
+                if (cached) {
+                    wasmStatement = cached;
+                } else {
+                    const lexer = new this.wasmModule.Lexer(sql);
+                    const parser = new this.wasmModule.Parser(lexer);
+                    try {
+                        wasmStatement = parser.parse();
+                    } catch (e) {
+                        // Fallback to TS parser if Wasm parser fails
+                    } finally {
+                        lexer.delete();
+                        parser.delete();
+                    }
                 }
 
                 if (wasmStatement) {
                     const type = wasmStatement.type();
-                    const upperSQL = sql.toUpperCase();
-                    const isComplex = upperSQL.includes('JOIN') || 
-                                    upperSQL.includes('GROUP BY') || 
-                                    upperSQL.includes('UNION') || 
-                                    upperSQL.includes('LIKE') || 
-                                    upperSQL.includes('IN (') || 
-                                    upperSQL.includes('BETWEEN') ||
-                                    upperSQL.includes('SUM(') ||
-                                    upperSQL.includes('AVG(');
 
-                    if (type === 'SELECT' && !isComplex) {
-                        const tableName = (wasmStatement as any).table;
-                        if (tableName && tableName !== '*') {
-                            this._prefetchedData[tableName] = await this.executor.getFullTableData(tableName);
-                            
-                            try {
-                                const res = this.wasmExecutor.execute(wasmStatement);
-                                return res;
-                            } finally {
-                                wasmStatement.delete();
+                    // WASM handles SELECT queries (simple WHERE, LIMIT/OFFSET, COUNT, projection)
+                    // Only fall back to TS for JOINs, GROUP BY, UNION, subqueries — features
+                    // not yet implemented in the WASM executor
+                    if (type === 'SELECT') {
+                        const upperSQL = sql.toUpperCase();
+                        const needsTsFallback = upperSQL.includes('JOIN') || 
+                                                upperSQL.includes('GROUP BY') ||
+                                                upperSQL.includes('UNION') ||
+                                                upperSQL.includes('HAVING');
+
+                        if (!needsTsFallback) {
+                            const tableName = (wasmStatement as any).table;
+                            if (tableName && tableName !== '*') {
+                                const tableData = await this.executor.getFullTableData(tableName);
+                                this._prefetchedData[tableName] = tableData;
+                                this._prefetchedJson[tableName] = JSON.stringify(tableData);
+                                
+                                try {
+                                    const res = this.wasmExecutor.execute(wasmStatement);
+                                    return res;
+                                } finally {
+                                    // Don't delete cached statements
+                                    if (!cached) {
+                                        wasmStatement.delete();
+                                    }
+                                }
                             }
                         }
                     }
-                    wasmStatement.delete();
+
+                    // Clean up non-cached statements that we didn't use
+                    if (!cached) {
+                        wasmStatement.delete();
+                    }
                 }
             } catch (e) {
-                if (wasmStatement) wasmStatement.delete();
+                if (wasmStatement && !this.stmtCache.get(sql)) wasmStatement.delete();
             }
         }
 
@@ -129,6 +197,7 @@ export class ToySQLite {
      * Closes the database connection.
      */
     public close(): void {
+        this.stmtCache.clear();
         this.db.close();
     }
 }

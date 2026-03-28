@@ -1,9 +1,6 @@
 #include "parser.hpp"
 #include <algorithm>
 #include <stdexcept>
-#include <emscripten/val.h>
-
-using namespace emscripten;
 
 namespace toy {
 
@@ -216,14 +213,15 @@ std::shared_ptr<WhereClause> Parser::parseSimpleCondition() {
     cond->op = currentToken.value;
     advance(); // eat op
     
+    // Parse value into NativeValue — no emscripten::val involved
     if (currentToken.type == TokenType::Number) {
-        cond->value = val(std::stod(currentToken.value));
+        cond->value = NativeValue(std::stod(currentToken.value));
         advance();
     } else if (currentToken.type == TokenType::String) {
-        cond->value = val(currentToken.value);
+        cond->value = NativeValue(currentToken.value);
         advance();
     } else if (currentToken.type == TokenType::Identifier) {
-        cond->value = val(currentToken.value);
+        cond->value = NativeValue(currentToken.value);
         advance();
     }
     return cond;
@@ -267,16 +265,19 @@ std::shared_ptr<InsertStatement> Parser::parseInsert() {
         advance();
         while (currentToken.value == "(") {
             eat(TokenType::Punctuation);
-            std::vector<Value> tuple;
+            std::vector<NativeValue> tuple;
             while (currentToken.type != TokenType::EOF_TOKEN && currentToken.value != ")") {
-                if (currentToken.type == TokenType::Number) tuple.push_back(val(std::stod(currentToken.value)));
-                else tuple.push_back(val(currentToken.value));
+                if (currentToken.type == TokenType::Number) {
+                    tuple.push_back(NativeValue(std::stod(currentToken.value)));
+                } else {
+                    tuple.push_back(NativeValue(currentToken.value));
+                }
                 advance();
                 if (currentToken.value == ",") eat(TokenType::Punctuation);
                 else break;
             }
             eat(TokenType::Punctuation); // ')'
-            stmt->values.push_back(tuple);
+            stmt->values.push_back(std::move(tuple));
             if (currentToken.value == ",") eat(TokenType::Punctuation);
             else break;
         }
@@ -297,10 +298,14 @@ std::shared_ptr<UpdateStatement> Parser::parseUpdate() {
         std::string col = currentToken.value;
         eat(TokenType::Identifier);
         eat(TokenType::Operator); // eat '='
-        Value val_expr = val::undefined();
-        if (currentToken.type == TokenType::Number) val_expr = val(std::stod(currentToken.value));
-        else if (currentToken.type == TokenType::String) val_expr = val(currentToken.value);
-        else if (currentToken.type == TokenType::Identifier) val_expr = val(currentToken.value);
+        NativeValue val_expr;
+        if (currentToken.type == TokenType::Number) {
+            val_expr = NativeValue(std::stod(currentToken.value));
+        } else if (currentToken.type == TokenType::String) {
+            val_expr = NativeValue(currentToken.value);
+        } else if (currentToken.type == TokenType::Identifier) {
+            val_expr = NativeValue(currentToken.value);
+        }
         advance();
         stmt->setParts.push_back({col, val_expr});
         if (currentToken.value == ",") eat(TokenType::Punctuation);

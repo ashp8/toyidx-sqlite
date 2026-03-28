@@ -29,7 +29,7 @@ private:
     std::shared_ptr<WhereClause> parseCondition();
     std::shared_ptr<WhereClause> parseSimpleCondition();
     
-    Value parseValue();
+    NativeValue parseValue();
 };
 
 } // namespace toy

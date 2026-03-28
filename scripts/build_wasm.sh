@@ -14,7 +14,7 @@ cd build_wasm
 # Adding -fexceptions to enable C++ exception catching in JS
 /usr/lib/emscripten/emcmake cmake .. -DCMAKE_TOOLCHAIN_FILE=/usr/lib/emscripten/cmake/Modules/Platform/Emscripten.cmake \
                 -DCMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/node \
-                -DCMAKE_CXX_FLAGS="-fexceptions"
+                -DCMAKE_CXX_FLAGS="-fexceptions -O3"
 # Run emmake
 /usr/lib/emscripten/emmake make -j$(nproc)
 
