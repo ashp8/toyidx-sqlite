@@ -13,9 +13,6 @@ struct IStorageWrapper : public wrapper<IStorage> {
     val getTableData(const std::string& tableName) override {
         return call<val>("getTableData", tableName);
     }
-    std::string getTableDataJson(const std::string& tableName) override {
-        return call<std::string>("getTableDataJson", tableName);
-    }
 };
 
 EMSCRIPTEN_BINDINGS(toy_sql_engine) {
@@ -52,10 +49,11 @@ EMSCRIPTEN_BINDINGS(toy_sql_engine) {
 
     class_<IStorage>("IStorage")
         .function("getTableData", &IStorage::getTableData, pure_virtual())
-        .function("getTableDataJson", &IStorage::getTableDataJson)
         .allow_subclass<IStorageWrapper>("IStorageWrapper");
 
     class_<Executor>("Executor")
         .constructor<IStorage&>()
-        .function("execute", &Executor::execute);
+        .function("execute", &Executor::execute)
+        .function("preloadTable", &Executor::preloadTable)
+        .function("clearPreload", &Executor::clearPreload);
 }

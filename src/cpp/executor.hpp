@@ -2,6 +2,8 @@
 
 #include "ast.hpp"
 #include <emscripten/val.h>
+#include <cstring>
+#include <unordered_map>
 
 namespace toy {
 
@@ -10,10 +12,6 @@ class IStorage {
 public:
     virtual ~IStorage() = default;
     virtual emscripten::val getTableData(const std::string& tableName) = 0;
-    // Fast path: get data as JSON string for efficient transfer
-    virtual std::string getTableDataJson(const std::string& tableName) {
-        return "[]";
-    }
 };
 
 class Executor {
@@ -21,16 +19,24 @@ public:
     Executor(IStorage& storage);
     emscripten::val execute(std::shared_ptr<Statement> stmt);
 
+    // Preload table data as binary into WASM memory for zero-bridge-call processing
+    void preloadTable(const std::string& tableName, uintptr_t dataPtr, size_t dataLen);
+    void clearPreload(const std::string& tableName);
+
 private:
     IStorage& storage;
 
-    // Internal methods use native types — no emscripten::val
+    // Preloaded binary data pointers (valid until clearPreload is called)
+    struct BinaryData { uintptr_t ptr; size_t len; };
+    std::unordered_map<std::string, BinaryData> preloadedTables;
+
+    // Internal native processing
     std::vector<NativeRow> executeSelectNative(std::shared_ptr<SelectStatement> stmt);
     bool evaluateWhere(const NativeRow& record, const std::shared_ptr<WhereClause>& where);
-    
-    // Parse a simple JSON array of objects into NativeRows
-    // Handles flat objects with string/number/null values
-    std::vector<NativeRow> parseJsonRows(const std::string& json);
+
+    // Binary format reader — parses the compact binary format into NativeRows
+    // Uses memcpy for all multi-byte reads to avoid unaligned access UB
+    static std::vector<NativeRow> readBinaryRows(const uint8_t* data, size_t len);
 };
 
 } // namespace toy

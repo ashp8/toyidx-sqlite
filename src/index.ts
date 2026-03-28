@@ -12,50 +12,92 @@ export interface EngineConfig {
     useWasm?: boolean;
 }
 
-// Simple LRU-style statement cache to avoid re-parsing identical SQL
-class StmtCache {
-    private cache = new Map<string, { stmt: any, hits: number }>();
-    private maxSize: number;
+/**
+ * Serialize an array of JS objects into a compact binary format for WASM.
+ *
+ * Format:
+ *   [num_rows: u32_le][num_cols: u32_le]
+ *   for each col: [name_len: u16_le][name: UTF-8]
+ *   for each row, for each col:
+ *     [type: u8] 0=null, 1=f64, 2=string
+ *     type 1: [f64_le]
+ *     type 2: [str_len: u32_le][str: UTF-8]
+ */
+function serializeToBinary(rows: any[]): Uint8Array {
+    if (rows.length === 0) return new Uint8Array(0);
 
-    constructor(maxSize = 100) {
-        this.maxSize = maxSize;
-    }
+    const encoder = new TextEncoder();
 
-    get(sql: string): any | null {
-        const entry = this.cache.get(sql);
-        if (entry) {
-            entry.hits++;
-            return entry.stmt;
+    // Collect column names from first row (excluding internal _rowid)
+    const columns: string[] = [];
+    const firstRow = rows[0];
+    for (const key in firstRow) {
+        if (Object.prototype.hasOwnProperty.call(firstRow, key)) {
+            columns.push(key);
         }
-        return null;
     }
 
-    set(sql: string, stmt: any): void {
-        if (this.cache.size >= this.maxSize) {
-            // Evict least-hit entry
-            let minKey = '';
-            let minHits = Infinity;
-            for (const [key, val] of this.cache) {
-                if (val.hits < minHits) {
-                    minHits = val.hits;
-                    minKey = key;
-                }
+    // Pre-encode all column names
+    const encodedColNames = columns.map(c => encoder.encode(c));
+
+    // Pre-encode all string values and calculate total buffer size
+    // Header: 4 (numRows) + 4 (numCols) + sum(2 + nameLen)
+    let totalSize = 8;
+    for (const enc of encodedColNames) {
+        totalSize += 2 + enc.length;
+    }
+
+    // Pre-compute row data to get exact size
+    const rowEncodings: Array<Array<{ type: number; numVal?: number; strBytes?: Uint8Array }>> = [];
+    for (const row of rows) {
+        const rowEnc: Array<{ type: number; numVal?: number; strBytes?: Uint8Array }> = [];
+        for (const col of columns) {
+            const val = row[col];
+            if (val === null || val === undefined) {
+                rowEnc.push({ type: 0 });
+                totalSize += 1;
+            } else if (typeof val === 'number') {
+                rowEnc.push({ type: 1, numVal: val });
+                totalSize += 1 + 8;
+            } else {
+                const strBytes = encoder.encode(String(val));
+                rowEnc.push({ type: 2, strBytes });
+                totalSize += 1 + 4 + strBytes.length;
             }
-            if (minKey) {
-                const evicted = this.cache.get(minKey);
-                if (evicted?.stmt?.delete) evicted.stmt.delete();
-                this.cache.delete(minKey);
-            }
         }
-        this.cache.set(sql, { stmt, hits: 1 });
+        rowEncodings.push(rowEnc);
     }
 
-    clear(): void {
-        for (const [, entry] of this.cache) {
-            if (entry.stmt?.delete) entry.stmt.delete();
-        }
-        this.cache.clear();
+    // Write to buffer
+    const buffer = new ArrayBuffer(totalSize);
+    const view = new DataView(buffer);
+    const u8 = new Uint8Array(buffer);
+    let offset = 0;
+
+    // Header
+    view.setUint32(offset, rows.length, true); offset += 4;
+    view.setUint32(offset, columns.length, true); offset += 4;
+
+    // Column names
+    for (const enc of encodedColNames) {
+        view.setUint16(offset, enc.length, true); offset += 2;
+        u8.set(enc, offset); offset += enc.length;
     }
+
+    // Rows
+    for (const rowEnc of rowEncodings) {
+        for (const cell of rowEnc) {
+            view.setUint8(offset, cell.type); offset += 1;
+            if (cell.type === 1) {
+                view.setFloat64(offset, cell.numVal!, true); offset += 8;
+            } else if (cell.type === 2) {
+                view.setUint32(offset, cell.strBytes!.length, true); offset += 4;
+                u8.set(cell.strBytes!, offset); offset += cell.strBytes!.length;
+            }
+        }
+    }
+
+    return u8;
 }
 
 export class ToySQLite {
@@ -63,10 +105,7 @@ export class ToySQLite {
     private executor: Executor;
     private wasmModule: any;
     private wasmExecutor: any;
-    private _prefetchedData: Record<string, any[]> = {};
-    private _prefetchedJson: Record<string, string> = {};
     private config: EngineConfig;
-    private stmtCache = new StmtCache(50);
 
     constructor(dbName: string = 'toy_sqlite', version: number = 1, config: EngineConfig = {}) {
         this.db = new Database(dbName, version);
@@ -84,14 +123,10 @@ export class ToySQLite {
         if (this.config.useWasm && !this.wasmModule) {
             try {
                 this.wasmModule = await initSqlEngine();
-                // Implement IStorage bridge
-                const self = this;
+                // IStorage bridge (fallback only — preloadTable is the fast path)
                 const StorageBridge = this.wasmModule.IStorage.extend("IStorage", {
-                    getTableData: function(tableName: string) {
-                        return self._prefetchedData[tableName] || [];
-                    },
-                    getTableDataJson: function(tableName: string) {
-                        return self._prefetchedJson[tableName] || '[]';
+                    getTableData: function(_tableName: string) {
+                        return [];
                     }
                 });
                 this.wasmExecutor = new this.wasmModule.Executor(new StorageBridge());
@@ -110,32 +145,23 @@ export class ToySQLite {
         if (this.config.useWasm && this.wasmModule) {
             let wasmStatement: any = null;
             try {
-                // Try cache first
-                const cached = this.stmtCache.get(sql);
-                if (cached) {
-                    wasmStatement = cached;
-                } else {
-                    const lexer = new this.wasmModule.Lexer(sql);
-                    const parser = new this.wasmModule.Parser(lexer);
-                    try {
-                        wasmStatement = parser.parse();
-                    } catch (e) {
-                        // Fallback to TS parser if Wasm parser fails
-                    } finally {
-                        lexer.delete();
-                        parser.delete();
-                    }
+                const lexer = new this.wasmModule.Lexer(sql);
+                const parser = new this.wasmModule.Parser(lexer);
+                try {
+                    wasmStatement = parser.parse();
+                } catch (e) {
+                    // Fallback to TS parser if Wasm parser fails
+                } finally {
+                    lexer.delete();
+                    parser.delete();
                 }
 
                 if (wasmStatement) {
                     const type = wasmStatement.type();
 
-                    // WASM handles SELECT queries (simple WHERE, LIMIT/OFFSET, COUNT, projection)
-                    // Only fall back to TS for JOINs, GROUP BY, UNION, subqueries — features
-                    // not yet implemented in the WASM executor
                     if (type === 'SELECT') {
                         const upperSQL = sql.toUpperCase();
-                        const needsTsFallback = upperSQL.includes('JOIN') || 
+                        const needsTsFallback = upperSQL.includes('JOIN') ||
                                                 upperSQL.includes('GROUP BY') ||
                                                 upperSQL.includes('UNION') ||
                                                 upperSQL.includes('HAVING');
@@ -143,30 +169,42 @@ export class ToySQLite {
                         if (!needsTsFallback) {
                             const tableName = (wasmStatement as any).table;
                             if (tableName && tableName !== '*') {
+                                // Fetch data, serialize to binary, and load directly into WASM memory
                                 const tableData = await this.executor.getFullTableData(tableName);
-                                this._prefetchedData[tableName] = tableData;
-                                this._prefetchedJson[tableName] = JSON.stringify(tableData);
-                                
+                                const binary = serializeToBinary(tableData);
+                                let ptr = 0;
+
                                 try {
+                                    if (binary.byteLength > 0) {
+                                        ptr = this.wasmModule._malloc(binary.byteLength);
+                                        this.wasmModule.HEAPU8.set(binary, ptr);
+                                        this.wasmExecutor.preloadTable(tableName, ptr, binary.byteLength);
+                                    }
+
                                     const res = this.wasmExecutor.execute(wasmStatement);
                                     return res;
                                 } finally {
-                                    // Don't delete cached statements
-                                    if (!cached) {
+                                    this.wasmExecutor.clearPreload(tableName);
+                                    if (ptr) this.wasmModule._free(ptr);
+                                    if (wasmStatement) {
                                         wasmStatement.delete();
+                                        wasmStatement = null;
                                     }
                                 }
                             }
                         }
                     }
 
-                    // Clean up non-cached statements that we didn't use
-                    if (!cached) {
+                    if (wasmStatement) {
                         wasmStatement.delete();
+                        wasmStatement = null;
                     }
                 }
             } catch (e) {
-                if (wasmStatement && !this.stmtCache.get(sql)) wasmStatement.delete();
+                if (wasmStatement) {
+                    wasmStatement.delete();
+                    wasmStatement = null;
+                }
             }
         }
 
@@ -174,7 +212,7 @@ export class ToySQLite {
         const tsLexer = new Lexer(sql);
         const tsParser = new Parser(tsLexer);
         const tsStatement = tsParser.parse();
-        
+
         const res = await this.executor.execute(tsStatement);
         return res;
     }
@@ -197,7 +235,6 @@ export class ToySQLite {
      * Closes the database connection.
      */
     public close(): void {
-        this.stmtCache.clear();
         this.db.close();
     }
 }
