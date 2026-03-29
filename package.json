@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "profile": "tsx scripts/profiler.ts",
-    "wasm:build": "./scripts/build_wasm.sh"
+    "wasm:build": "./scripts/build_wasm.sh",
+    "prepare": "npm run build"
   },
   "keywords": [],
   "author": "",
